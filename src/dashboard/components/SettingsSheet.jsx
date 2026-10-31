@@ -58,10 +58,13 @@ export default function SettingsSheet({ open, onClose, theme, setTheme, source, 
               <div className="setrow">
                 <Icon name="badge" size={20} />
                 <div className="grow">
-                  <div className="t-body-m">{meta?.upn || 'Signed-in student'}</div>
+                  <div className="t-body-m">
+                    {meta?.upn || 'Signed-in student'}
+                    {meta?.strategy ? ` · via ${meta.strategy === 'graph' ? 'Graph API' : 'edu.microsoft.com'}` : ''}
+                  </div>
                   <div className="note">
                     {meta?.capturedAt ? `Token captured ${fmtTime(meta.capturedAt)}` : 'No session token captured yet'}
-                    {meta?.scp ? ` · scopes include EduAssignments` : ''}
+                    {Array.isArray(meta?.seen) && meta.seen.length ? ` · seen: ${meta.seen.slice(0, 3).join(', ')}` : ''}
                   </div>
                 </div>
               </div>

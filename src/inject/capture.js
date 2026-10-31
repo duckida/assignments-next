@@ -11,17 +11,17 @@
  * handed to the isolated content-script bridge via window.postMessage and then
  * to the extension service worker. Tokens stay on-device.
  */
-import { isGraphAccessToken, tokenSummary } from '../shared/jwt.js'
+import { decodeJwtPayload, tokenSummary } from '../shared/jwt.js'
 import { WINDOW_MARKER, WT } from '../shared/protocol.js'
 
 (() => {
   if (window.__MAD3_CAPTURE__) return
   window.__MAD3_CAPTURE__ = true
 
-  let lastTokenKey = ''
+  const seenTokens = new Set()
   const MAX_SNAPSHOT_BODY = 1_500_000
   let sentSinceLoad = 0
-  const MAX_MESSAGES_PER_PAGE = 80
+  const MAX_MESSAGES_PER_PAGE = 120
 
   function post(type, payload) {
     if (sentSinceLoad >= MAX_MESSAGES_PER_PAGE) return
@@ -33,16 +33,27 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
     }
   }
 
+  // Capture EVERY bearer token seen on this page (any audience) — the service
+  // worker decides which audience is usable (Graph vs edu-internal vs Teams).
   function considerToken(token) {
     if (!token || typeof token !== 'string' || token.length < 20) return
-    if (!isGraphAccessToken(token)) return
-    const s = tokenSummary(token)
-    if (!s) return
-    if (s.expMs && s.expMs < Date.now()) return
-    const key = `${s.expMs}|${token.length}`
-    if (key === lastTokenKey) return
-    lastTokenKey = key
-    post(WT.TOKEN, { token, expMs: s.expMs, scp: s.scp, upn: s.upn, capturedAt: Date.now() })
+    const p = decodeJwtPayload(token)
+    if (!p || !p.aud) return
+    const expMs = p.exp ? p.exp * 1000 : 0
+    if (expMs && expMs < Date.now()) return
+    const key = `${p.aud}|${expMs}|${token.length}`
+    if (seenTokens.has(key)) return
+    seenTokens.add(key)
+    const s = tokenSummary(token) || {}
+    post(WT.TOKEN, {
+      token,
+      aud: String(p.aud),
+      expMs,
+      scp: s.scp || '',
+      upn: s.upn || '',
+      host: window.location.host,
+      capturedAt: Date.now(),
+    })
   }
 
   function createsTokenLeakRisk(url) {
@@ -66,7 +77,7 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
   function sniffResponse(urlString, contentType /* string|null */, bodyProvider /* () => Promise<string> */) {
     if (!contentType || !contentType.includes('json')) return
     const url = String(urlString || '')
-    const isTeamsEdu = /teams\.(microsoft\.com|cloud\.microsoft)/.test(url) && /assignment/i.test(url)
+    const isTeamsEdu = /(teams\.(microsoft\.com|cloud\.microsoft)|edu\.microsoft\.com)/.test(url) && /assignment/i.test(url)
     if (!isTeamsEdu && !/graph\.microsoft\./.test(url)) return
     if (createsTokenLeakRisk(url)) return
     let body

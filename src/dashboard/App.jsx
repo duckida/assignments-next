@@ -270,7 +270,7 @@ export default function App() {
             <StateAction
               icon="lock"
               headline="No session token yet"
-              body="Open teams.microsoft.com in this browser and sign in — the extension picks up the Graph token your Teams tab already uses. Then hit Refresh."
+              body="Reload your open Teams tab (extensions only inject on page load), then browse to Assignments in Teams Web so a token is issued. Then hit Refresh."
               actions={
                 <>
                   <a className="btn btn-filled btn-md" href="https://teams.microsoft.com" target="_blank" rel="noreferrer">
