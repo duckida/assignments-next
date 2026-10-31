@@ -1,0 +1,52 @@
+{
+  "manifest_version": 3,
+  "name": "Assignments+ — Material UI for Teams",
+  "short_name": "Assignments+",
+  "version": "0.1.0",
+  "description": "A Material 3 alternative frontend for Teams Assignments, for students. Reads only your own assignment data via the session you already have in Teams Web.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://graph.microsoft.com/*",
+    "https://teams.microsoft.com/*",
+    "https://*.teams.microsoft.com/*",
+    "https://*.cloud.microsoft/*",
+    "https://teams.live.com/*"
+  ],
+  "background": {
+    "service_worker": "assets/background.js"
+  },
+  "action": {
+    "default_title": "Open Assignments+ dashboard"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://*.cloud.microsoft/*",
+        "https://teams.live.com/*"
+      ],
+      "js": ["assets/capture.js"],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://*.cloud.microsoft/*",
+        "https://teams.live.com/*"
+      ],
+      "js": ["assets/bridge.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
