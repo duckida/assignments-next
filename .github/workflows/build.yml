@@ -1,0 +1,61 @@
+name: Build extension
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build extension (dist/)
+        run: npm run build
+
+      - name: Smoke-check bundles + manifest refs
+        run: |
+          node --check dist/assets/background.js
+          node --check dist/assets/bridge.js
+          node --check dist/assets/capture.js
+          test -f dist/manifest.json
+          test -f dist/index.html
+          test -f dist/preview.html
+          test -f dist/fonts/material-symbols-rounded.woff2
+          echo "dist OK:" && ls -la dist
+
+      - name: Zip extension
+        working-directory: dist
+        run: zip -r "$GITHUB_WORKSPACE/assignments-next-extension.zip" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assignments-next-extension
+          path: assignments-next-extension.zip
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: assignments-next-extension
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assignments-next-extension.zip
+          generate_release_notes: true
