@@ -13,8 +13,12 @@ const SNAPSHOT_KEY = 'mad3.snapshot.v1'
 const VISIBLE = new Set(['assigned', 'published', 'inactive', 'unknownFutureValue'])
 
 chrome.runtime.onInstalled.addListener(() => {
-  if (chrome.storage?.session?.setAccessLevel) {
-    chrome.storage.session.setAccessLevel({ scope: 'TRUSTED_CONTEXTS' }).catch(() => {})
+  // storage.session defaults to TRUSTED_CONTEXTS already; this just pins it.
+  // (property is `accessLevel` — throws synchronously when malformed, so wrap in try)
+  try {
+    chrome.storage?.session?.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' })?.catch?.(() => {})
+  } catch {
+    /* not supported */
   }
 })
 
