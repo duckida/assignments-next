@@ -66,7 +66,7 @@ export async function graphBatch(token, subpaths, { version = 'v1.0' } = {}) {
   for (let i = 0; i < subpaths.length; i += 20) {
     const chunk = subpaths.slice(i, i + 20)
     const body = {
-      requests: chunk.map((p, j) => ({ id: String(i + j), method: 'GET', url: p })),
+      requests: chunk.map((p, j) => ({ id: String(j), method: 'GET', url: p })),
     }
     let json
     try {
@@ -77,7 +77,7 @@ export async function graphBatch(token, subpaths, { version = 'v1.0' } = {}) {
     }
     const responses = Array.isArray(json?.responses) ? json.responses : []
     for (const r of responses) {
-      const path = chunk[Number(r.id) - i] ?? chunk[Number(r.id)]
+      const path = chunk[Number(r.id)]
       if (!path) continue
       const okBody = r.status >= 200 && r.status < 300 ? r.body : null
       results.set(path, okBody)

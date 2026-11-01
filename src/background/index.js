@@ -97,15 +97,22 @@ async function getCandidates() {
   return { candidates: list, seen: store?.[SEEN_KEY] || [] }
 }
 
-function pickToken(candidates) {
-  const graph = candidates.find((c) => isGraphAud(c.aud))
-  if (graph) return { token: graph.token, strategy: 'graph', meta: graph }
-  const edu = candidates.find((c) => isEduAud(c.aud))
-  if (edu) return { token: edu.token, strategy: 'edu', meta: edu }
-  // any token carrying education scopes is usable against Graph
-  const scoped = candidates.find((c) => /EduAssignments|EduRoster/i.test(c.scp || ''))
-  if (scoped) return { token: scoped.token, strategy: 'graph', meta: scoped }
-  return null
+function makePicks(candidates) {
+  const picks = []
+  const add = (strategy, c) => {
+    if (!c) return
+    const key = `${strategy}|${c.aud}|${c.expMs}|${c.token.length}`
+    if (!picks.some((p) => p.key === key)) picks.push({ key, token: c.token, strategy, meta: c })
+  }
+
+  // Graph-audience tokens are ideal when they include EduAssignments/EduRoster.
+  for (const c of candidates.filter((x) => isGraphAud(x.aud))) add('graph', c)
+  // Teams EDU also commonly calls edu.microsoft.com internal endpoints with an edu-audience token.
+  for (const c of candidates.filter((x) => isEduAud(x.aud))) add('edu', c)
+  // Rare case: a non-standard audience token still carries education scopes.
+  for (const c of candidates.filter((x) => /EduAssignments|EduRoster/i.test(x.scp || ''))) add('graph', c)
+
+  return picks
 }
 
 /* ---------------- graph strategy ---------------- */
@@ -156,7 +163,42 @@ function graphFail(e, meta) {
   return {
     ok: false,
     code: e.status === 401 ? 'expired' : e.status === 403 ? 'forbidden' : 'error',
-    meta: { ...meta, message: e.message, hint: e.hint || '' },
+    meta: { ...meta, status: e.status || 0, graphCode: e.code || '', message: e.message, hint: e.hint || '' },
+  }
+}
+
+function attemptLabel(pick) {
+  return `${pick.strategy}:${String(pick.meta.aud || '').replace(/^https?:\/\//, '').slice(0, 72)}`
+}
+
+function attemptFromResult(pick, res) {
+  return {
+    strategy: pick.strategy,
+    aud: String(pick.meta.aud || ''),
+    status: res?.meta?.status || 0,
+    code: res?.code || 'error',
+    graphCode: res?.meta?.graphCode || '',
+    message: res?.meta?.message || res?.meta?.hint || 'Failed',
+  }
+}
+
+function allFailed(picks, seen, attempts) {
+  const forbidden = attempts.some((a) => a.code === 'forbidden' || a.status === 403)
+  const expired = attempts.length && attempts.every((a) => a.code === 'expired' || a.status === 401)
+  const summary = attempts
+    .map((a) => `${a.strategy} ${a.status || a.code}${a.graphCode ? ` ${a.graphCode}` : ''}`)
+    .join('; ')
+  return {
+    ok: false,
+    code: expired ? 'expired' : forbidden ? 'forbidden' : 'error',
+    meta: {
+      seen: seen.map((s) => s.aud),
+      attempts,
+      strategy: attempts.map((a) => a.strategy).join('→'),
+      message: summary || 'No usable education API token succeeded.',
+      hint:
+        'Captured token(s) were present but none could read assignments. In Teams Web, open Assignments, wait for the assignment list to load, then Refresh here. If it still fails, open Settings and copy the attempts/seen values.',
+    },
   }
 }
 
@@ -261,8 +303,8 @@ let syncing = false
 
 async function doSync() {
   const { candidates, seen } = await getCandidates()
-  const pick = pickToken(candidates)
-  if (!pick) {
+  const picks = makePicks(candidates)
+  if (!picks.length) {
     return {
       ok: false,
       code: 'no-token',
@@ -273,16 +315,34 @@ async function doSync() {
       },
     }
   }
-  const meta = { capturedAt: pick.meta.capturedAt, expMs: pick.meta.expMs, scp: pick.meta.scp, upn: pick.meta.upn, seen: seen.map((s) => s.aud) }
-  const res = pick.strategy === 'graph' ? await graphSync(pick, meta) : await eduSync(pick, meta)
-  return res
+  const attempts = []
+  for (const pick of picks) {
+    const meta = {
+      capturedAt: pick.meta.capturedAt,
+      expMs: pick.meta.expMs,
+      scp: pick.meta.scp,
+      upn: pick.meta.upn,
+      seen: seen.map((s) => s.aud),
+      attempt: attemptLabel(pick),
+    }
+    const res = pick.strategy === 'graph' ? await graphSync(pick, meta) : await eduSync(pick, meta)
+    if (res?.ok) {
+      // Treat zero assignments as a successful API read; some users may genuinely have none.
+      return { ...res, meta: { ...(res.meta || {}), attempts: [...attempts, { strategy: pick.strategy, aud: pick.meta.aud, status: 200, code: 'ok' }] } }
+    }
+    attempts.push(attemptFromResult(pick, res))
+  }
+  return allFailed(picks, seen, attempts)
 }
 
 async function doDetail({ classId, id }) {
   const { candidates, seen } = await getCandidates()
-  const pick = pickToken(candidates)
-  if (!pick) return { ok: false, code: 'no-token', meta: { seen: seen.map((s) => s.aud) } }
-  const meta = { upn: pick.meta.upn, strategy: pick.strategy }
+  const picks = makePicks(candidates)
+  if (!picks.length) return { ok: false, code: 'no-token', meta: { seen: seen.map((s) => s.aud) } }
+  const attempts = []
+  const sameTenant = (p) => p.strategy === 'graph' || String(p.meta.aud || '').includes('edu.microsoft.com')
+  for (const pick of picks.filter(sameTenant)) {
+  const meta = { upn: pick.meta.upn, strategy: pick.strategy, seen: seen.map((s) => s.aud), attempt: attemptLabel(pick) }
   try {
     if (pick.strategy === 'graph') {
       const base = `/education/classes/${classId}/assignments/${id}`
@@ -303,8 +363,10 @@ async function doDetail({ classId, id }) {
       : []
     return { ok: true, assignment: raw, meta }
   } catch (e) {
-    return graphFail(e, meta)
+    attempts.push(attemptFromResult(pick, graphFail(e, meta)))
   }
+  }
+  return allFailed(picks, seen, attempts)
 }
 
 async function clearData() {

@@ -160,6 +160,13 @@ export default function App() {
   }, [source, notify, refresh])
 
   const todoCount = useMemo(() => rows.filter((a) => a.state.progress === 'todo' || a.state.progress === 'reassigned').length, [rows])
+  const failureBody = useMemo(() => {
+    if (!meta) return 'Captured token(s) failed against every known assignments API. Open Settings for diagnostics.'
+    const attempts = Array.isArray(meta.attempts)
+      ? meta.attempts.map((a) => `${a.strategy || '?'} ${a.status || a.code || '?'}${a.graphCode ? ` ${a.graphCode}` : ''}`).join(' · ')
+      : ''
+    return meta.hint || [meta.message, attempts && `Attempts: ${attempts}`].filter(Boolean).join(' — ') || 'Sync failed.'
+  }, [meta])
 
   /* ---------- render ---------- */
   const themeIcon = theme === 'dark' ? 'dark_mode' : theme === 'light' ? 'light_mode' : 'contrast'
@@ -304,7 +311,7 @@ export default function App() {
             <StateAction
               icon="cloud_off"
               headline="Sync failed"
-              body={meta?.hint || meta?.message || 'Graph request failed — your Teams session may have expired. Refresh the Teams tab and retry.'}
+              body={failureBody}
               actions={
                 <button type="button" className="btn btn-filled btn-md" onClick={() => refresh({ silent: false })}>
                   <Icon name="sync" size={18} />

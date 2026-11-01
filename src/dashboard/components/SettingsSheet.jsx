@@ -55,19 +55,34 @@ export default function SettingsSheet({ open, onClose, theme, setTheme, source, 
               </div>
             </div>
             {source.kind === 'extension' ? (
-              <div className="setrow">
-                <Icon name="badge" size={20} />
-                <div className="grow">
-                  <div className="t-body-m">
-                    {meta?.upn || 'Signed-in student'}
-                    {meta?.strategy ? ` · via ${meta.strategy === 'graph' ? 'Graph API' : 'edu.microsoft.com'}` : ''}
-                  </div>
-                  <div className="note">
-                    {meta?.capturedAt ? `Token captured ${fmtTime(meta.capturedAt)}` : 'No session token captured yet'}
-                    {Array.isArray(meta?.seen) && meta.seen.length ? ` · seen: ${meta.seen.slice(0, 3).join(', ')}` : ''}
+              <>
+                <div className="setrow">
+                  <Icon name="badge" size={20} />
+                  <div className="grow">
+                    <div className="t-body-m">
+                      {meta?.upn || 'Signed-in student'}
+                      {meta?.strategy ? ` · via ${meta.strategy === 'graph' ? 'Graph API' : meta.strategy === 'edu' ? 'edu.microsoft.com' : meta.strategy}` : ''}
+                    </div>
+                    <div className="note">
+                      {meta?.capturedAt ? `Token captured ${fmtTime(meta.capturedAt)}` : 'No session token captured yet'}
+                      {Array.isArray(meta?.seen) && meta.seen.length ? ` · seen: ${meta.seen.slice(0, 3).join(', ')}` : ''}
+                    </div>
                   </div>
                 </div>
-              </div>
+                {Array.isArray(meta?.attempts) && meta.attempts.length ? (
+                  <div className="setrow" style={{ alignItems: 'flex-start' }}>
+                    <Icon name="bug_report" size={20} />
+                    <div className="grow">
+                      <div className="t-body-m">API attempts</div>
+                      <div className="note" style={{ wordBreak: 'break-word' }}>
+                        {meta.attempts
+                          .map((a) => `${a.strategy}:${a.status || a.code}${a.graphCode ? `:${a.graphCode}` : ''} (${String(a.aud || '').replace(/^https?:\/\//, '')})`)
+                          .join(' · ')}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </>
             ) : null}
             <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>
               <button type="button" className="btn btn-tonal btn-md" onClick={onRefresh}>
