@@ -18,6 +18,7 @@ export function mapAssignment(raw) {
   return {
     id: raw.id,
     classId: raw.classId,
+    className: raw.className || raw.classDisplayName || null,
     title: raw.displayName || 'Untitled assignment',
     dueTs: raw.dueDateTime ? Date.parse(raw.dueDateTime) : null,
     closeTs: raw.closeDateTime ? Date.parse(raw.closeDateTime) : null,

@@ -62,6 +62,9 @@ function extSource() {
     detail({ classId, id }) {
       return send(MSG.DETAIL, { classId, id })
     },
+    title(url) {
+      return send(MSG.TITLE, { url })
+    },
     async clear() {
       await send(MSG.CLEAR)
       try {
@@ -96,6 +99,9 @@ function demoSource() {
     },
     async snapshot() {
       return null
+    },
+    async title() {
+      return { ok: false, title: null }
     },
   }
 }

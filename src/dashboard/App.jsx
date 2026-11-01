@@ -19,7 +19,7 @@ export default function App() {
   const [meta, setMeta] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [snack, setSnack] = useState(null)
-  const [mode, setMode] = useState(QS.get('mode') || 'todo') // todo | done | all
+  const [mode, setMode] = useState(QS.get('mode') || 'upcoming') // overdue | upcoming | done
   const [classFilter, setClassFilter] = useState(null)
   const [detail, setDetail] = useState(null) // {vm, cls, phase, raw, error}
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -108,20 +108,20 @@ export default function App() {
     }
     let filtered = list
     if (classFilter) filtered = filtered.filter((a) => a.classId === classFilter)
-    if (mode !== 'all') {
-      filtered = filtered.filter((a) => {
-        const p = a.state.progress
-        const todoish = p === 'todo' || p === 'reassigned'
-        return mode === 'todo' ? todoish : !todoish
-      })
-    }
+    filtered = filtered.filter((a) => {
+      const p = a.state.progress
+      const todoish = p === 'todo' || p === 'reassigned'
+      if (mode === 'done') return !todoish
+      if (mode === 'overdue') return todoish && a.state.bucket === 'overdue'
+      return todoish && a.state.bucket !== 'overdue' // upcoming
+    })
     return sortAssignments(filtered, now)
   }, [data, mode, classFilter])
 
   const sections = useMemo(() => {
-    if (mode === 'done') return [{ key: 'done', title: 'Completed', rows }]
+    if (mode === 'done') return rows.length ? [{ key: 'done', title: 'Completed', rows }] : []
+    if (mode === 'overdue') return rows.length ? [{ key: 'overdue', title: 'Overdue', rows }] : []
     const defs = [
-      ['overdue', 'Overdue'],
       ['today', 'Due today'],
       ['soon', 'Next few days'],
       ['later', 'Later'],
@@ -132,22 +132,22 @@ export default function App() {
       const r = rows.filter((a) => (key === 'none' ? a.state.bucket === 'none' : a.state.bucket === key))
       if (r.length) out.push({ key, title, rows: r })
     }
-    if (mode === 'all') {
-      const done = rows.filter((a) => a.state.progress !== 'todo' && a.state.progress !== 'reassigned')
-      if (done.length) out.push({ key: 'done', title: 'Completed', rows: done })
-    }
     return out
   }, [rows, mode])
+
+  // class lookup with per-assignment name fallback (classes list can be empty
+  // when the token lacks EduRoster scopes)
+  const clsFor = useCallback((a) => classMap.get(a.classId) || (a.className ? { id: a.classId, name: a.className } : undefined), [classMap])
 
   /* ---------- detail ---------- */
   const openDetail = useCallback(
     async (vm) => {
-      const cls = classMap.get(vm.classId)
+      const cls = clsFor(vm)
       setDetail({ vm, cls, phase: 'loading', raw: null })
       const res = await source.detail({ classId: vm.classId, id: vm.id })
       setDetail((cur) => (cur && cur.vm.id === vm.id ? { ...cur, phase: res?.ok ? 'ready' : 'error', raw: res?.assignment || null } : cur))
     },
-    [classMap, source]
+    [clsFor, source]
   )
 
   const clearData = useCallback(async () => {
@@ -213,9 +213,9 @@ export default function App() {
               value={mode}
               onChange={setMode}
               options={[
-                { value: 'todo', label: 'To do' },
+                { value: 'overdue', label: 'Overdue' },
+                { value: 'upcoming', label: 'Upcoming' },
                 { value: 'done', label: 'Done' },
-                { value: 'all', label: 'All' },
               ]}
             />
             <span className="spacer" />
@@ -248,22 +248,24 @@ export default function App() {
                 sections.map((s) => (
                   <Section key={s.key} title={s.title} count={s.rows.length}>
                     {s.rows.map((a) => (
-                      <AssignmentCard key={a.id} a={a} cls={classMap.get(a.classId)} onOpen={openDetail} />
+                      <AssignmentCard key={a.id} a={a} cls={clsFor(a)} onOpen={openDetail} />
                     ))}
                   </Section>
                 ))
               ) : (
                 <StateAction
-                  icon={mode === 'todo' ? 'celebration' : 'inbox'}
-                  headline={mode === 'todo' ? 'All clear!' : 'Nothing here'}
+                  icon={mode === 'done' ? 'inbox' : 'celebration'}
+                  headline={mode === 'overdue' ? 'Nothing overdue' : mode === 'upcoming' ? 'All clear!' : 'Nothing here yet'}
                   body={
-                    mode === 'todo'
-                      ? 'Nothing left to do — check the Done tab for graded work.'
-                      : 'No assignments match this filter right now.'
+                    mode === 'overdue'
+                      ? 'You’re all caught up — check Upcoming for what’s next.'
+                      : mode === 'upcoming'
+                        ? 'Nothing left to do — check the Done tab for graded work.'
+                        : 'Graded and turned-in work will appear here.'
                   }
                   actions={
-                    <button type="button" className="btn btn-tonal btn-md" onClick={() => setMode('all')}>
-                      Show all
+                    <button type="button" className="btn btn-tonal btn-md" onClick={() => setMode(mode === 'done' ? 'upcoming' : mode === 'overdue' ? 'upcoming' : 'done')}>
+                      {mode === 'done' ? 'View upcoming' : mode === 'overdue' ? 'View upcoming' : 'View completed'}
                     </button>
                   }
                 />
@@ -328,6 +330,7 @@ export default function App() {
         vm={detail?.vm}
         cls={detail?.cls}
         detail={detail ? { phase: detail.phase, raw: detail.raw } : null}
+        source={source}
         onClose={() => setDetail(null)}
       />
       <SettingsSheet

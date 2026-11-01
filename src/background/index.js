@@ -132,13 +132,16 @@ async function getClasses(token) {
 async function graphSync(pick, meta) {
   const token = pick.token
   const classes = (await getClasses(token)) || []
+  const classNames = new Map(classes.map((c) => [c.id, c.name]))
   let rawAssignments
   try {
     rawAssignments = await graphPaged(token, '/education/me/assignments?$top=200', { version: 'v1.0' })
   } catch (e) {
     return graphFail(e, meta)
   }
-  const assignments = rawAssignments.filter((a) => VISIBLE.has(String(a.status || '').toLowerCase()))
+  const assignments = rawAssignments
+    .filter((a) => VISIBLE.has(String(a.status || '').toLowerCase()))
+    .map((a) => ({ ...a, className: classNames.get(a.classId) || a.classDisplayName || null }))
   const subPaths = assignments.map((a) => `/education/classes/${a.classId}/assignments/${a.id}/submissions?$expand=outcomes`)
   const subs = await safeBatch(token, subPaths)
   const submissions = {}
@@ -280,6 +283,7 @@ async function eduSync(pick, meta) {
       for (const a of arrOf(body)) {
         const raw = eduMapAssignment(a, t.id)
         if (!raw) continue
+        raw.className = t.name
         assignments.push(raw)
         try {
           const sBody = await eduGet(token, `/teams/${t.id}/assignments/${raw.id}/submissions/me`)
@@ -295,6 +299,54 @@ async function eduSync(pick, meta) {
     }
   })
   return { ok: true, data: { classes: teams, assignments, submissions, ts: Date.now() }, meta: { ...meta, strategy: 'edu' } }
+}
+
+/* ---------------- link titles ---------------- */
+
+const TITLES_KEY = 'mad3.titles.v1'
+const TITLE_MAX_AGE = 24 * 3_600_000
+
+function decodeEntities(s) {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }[e]))
+}
+
+async function fetchTitle(url) {
+  if (!/^https?:\/\//i.test(String(url))) return { ok: false, title: null }
+  const store = await chrome.storage.local.get(TITLES_KEY)
+  const cache = store?.[TITLES_KEY] || {}
+  const hit = cache[url]
+  if (hit && Date.now() - hit.ts < TITLE_MAX_AGE) return { ok: !!hit.title, title: hit.title }
+  let title = null
+  try {
+    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(9000) })
+    if (res.ok && (res.headers.get('content-type') || '').includes('text/html')) {
+      const reader = res.body.getReader()
+      let text = ''
+      const dec = new TextDecoder()
+      for (let bytes = 0; bytes < 262_144; ) {
+        const { done, value } = await reader.read()
+        if (done) break
+        bytes += value.length
+        text += dec.decode(value, { stream: true })
+        if (/<\/title>/i.test(text)) break
+      }
+      try {
+        reader.cancel()
+      } catch {}
+      const m = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(text)
+      if (m) title = decodeEntities(m[1].replace(/\s+/g, ' ')).trim().slice(0, 180) || null
+    }
+  } catch {
+    /* page unreachable / blocked — keep displayName fallback */
+  }
+  cache[url] = { title, ts: Date.now() }
+  const keys = Object.keys(cache)
+  if (keys.length > 400) delete cache[keys[0]]
+  chrome.storage.local.set({ [TITLES_KEY]: cache }).catch(() => {})
+  return { ok: !!title, title }
 }
 
 /* ---------------- sync / detail / clear ---------------- */
@@ -425,6 +477,12 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
     doDetail(req.payload || {})
       .then((res) => respond?.(res))
       .catch(() => respond?.({ ok: false, code: 'error' }))
+    return true
+  }
+  if (type === MSG.TITLE) {
+    fetchTitle(req.payload?.url || '')
+      .then((res) => respond?.(res))
+      .catch(() => respond?.({ ok: false, title: null }))
     return true
   }
   if (type === MSG.CLEAR) {

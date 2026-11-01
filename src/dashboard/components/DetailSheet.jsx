@@ -1,6 +1,5 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Icon from './Icon.jsx'
-import { ClassAvatar } from './Chips.jsx'
 import { sanitizeHtml, dueLabel } from '../../shared/normalize.js'
 
 const fmtTime = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—')
@@ -22,8 +21,16 @@ function resourceIcon(r) {
   return 'attach_file'
 }
 
-/** Modal bottom sheet: full assignment detail (instructions, resources, grade + feedback). */
-export default function DetailSheet({ open, vm, cls, detail, onClose }) {
+const hostnameOf = (url) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
+}
+
+/** Modal popup (desktop): full assignment detail — instructions, resources, grade + feedback. */
+export default function DetailSheet({ open, vm, cls, detail, source, onClose }) {
   useEffect(() => {
     if (!open) return
     const onKey = (e) => e.key === 'Escape' && onClose?.()
@@ -33,8 +40,25 @@ export default function DetailSheet({ open, vm, cls, detail, onClose }) {
 
   const d = detail?.raw || null
   const instructionsHtml = useMemo(() => sanitizeHtml(d?.instructions?.content || ''), [d])
-  const resources = Array.isArray(d?.resources) ? d.resources : []
+  const resources = useMemo(() => (Array.isArray(d?.resources) ? d.resources : []), [d])
   const webUrl = d?.webUrl || vm?.webUrl || cls?.webUrl || 'https://teams.microsoft.com'
+
+  // resolve <title> of resource links (server-fetched in the SW, cached)
+  const [titles, setTitles] = useState({})
+  useEffect(() => {
+    let alive = true
+    setTitles({})
+    for (const r of resources) {
+      const href = resourceLink(r)
+      if (!href || !source?.title) continue
+      source.title(href).then((res) => {
+        if (alive && res?.ok && res.title) setTitles((cur) => (cur[href] ? cur : { ...cur, [href]: res.title }))
+      })
+    }
+    return () => {
+      alive = false
+    }
+  }, [resources, source])
 
   if (!vm) return null
 
@@ -44,16 +68,18 @@ export default function DetailSheet({ open, vm, cls, detail, onClose }) {
   const isSubmitted = vm.state.progress === 'submitted'
   const isReassigned = vm.state.progress === 'reassigned'
   const isExcused = vm.state.progress === 'excused'
+  // the status banner already shows due info except for these states
+  const bannerShowsDue = !isExcused && !isReassigned && !isSubmitted
+  const className = cls?.name || vm.className || 'Class'
 
   return (
     <>
       <div className={`scrim${open ? ' on' : ''}`} onClick={onClose} />
-      <div className={`sheet-container${open ? ' on' : ''}`} role="dialog" aria-modal="true" aria-label={vm.title}>
-        <div className="sheet bottom detail">
-          <div className="grip" />
+      <div className={`sheet-container center${open ? ' on' : ''}`} role="dialog" aria-modal="true" aria-label={vm.title}>
+        <div className="sheet center detail">
           <div className="hdr">
             <div className="titles">
-              <div className="over t-label-m">{cls?.name || 'Class'}</div>
+              <div className="over t-label-m">{className}</div>
               <div className="t-headline-s">{vm.title}</div>
             </div>
             <button type="button" className="iconbtn" aria-label="Close" onClick={onClose}>
@@ -134,12 +160,14 @@ export default function DetailSheet({ open, vm, cls, detail, onClose }) {
                 <div className="kv">
                   <div className="kvrow">
                     <Icon name="school" size={18} />
-                    <span>{cls?.name || 'Class'}</span>
+                    <span>{className}</span>
                   </div>
-                  <div className="kvrow">
-                    <Icon name="event" size={18} />
-                    <span>{dueLabel(vm)}</span>
-                  </div>
+                  {!bannerShowsDue ? (
+                    <div className="kvrow">
+                      <Icon name="event" size={18} />
+                      <span>{dueLabel(vm)}</span>
+                    </div>
+                  ) : null}
                   {vm.closeTs ? (
                     <div className="kvrow">
                       <Icon name="event_busy" size={18} />
@@ -169,7 +197,8 @@ export default function DetailSheet({ open, vm, cls, detail, onClose }) {
                     <div className="listmini">
                       {resources.map((r) => {
                         const href = resourceLink(r)
-                        const name = r?.displayName || 'Resource'
+                        const fallback = r?.displayName && r.displayName !== 'Resource' ? r.displayName : hostnameOf(href) || r?.displayName || 'Resource'
+                        const name = (href && titles[href]) || fallback
                         return href ? (
                           <a key={r.id || name} href={href} target="_blank" rel="noreferrer">
                             <Icon name={resourceIcon(r)} size={20} />
@@ -193,9 +222,6 @@ export default function DetailSheet({ open, vm, cls, detail, onClose }) {
                     <Icon name="open_in_new" size={18} />
                     Open in Teams
                   </a>
-                  <button type="button" className="btn btn-text btn-md" onClick={onClose}>
-                    Close
-                  </button>
                 </div>
               </>
             )}
