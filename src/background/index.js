@@ -22,6 +22,16 @@ const DETAIL_TTL = 15 * 60_000
 const DETAILS_CAP = 80
 const VISIBLE = new Set(['assigned', 'published', 'inactive', 'unknownfuturevalue'])
 
+// Background sign-in: the edu-scoped Graph token only exists once the Assignments
+// client has run inside Teams, so we remember which URL produced one and replay it
+// in a hidden tab instead of making the user go through Teams.
+const TRIGGER_KEY = 'mad3.eduTrigger.v1' // { candidates: [{ url }], ts }
+const REFRESH_KEY = 'mad3.session.refreshAt.v1'
+const REFRESH_COOLDOWN = 45_000
+const REFRESH_BUDGET = [18_000, 12_000] // per candidate URL, ms
+const TEAMS_URL_RE = /^https:\/\/(?:[a-z0-9-]+\.)*(?:teams\.microsoft\.com|teams\.live\.com|cloud\.microsoft|edu\.microsoft\.com)\//i
+const TEAMS_HOME = 'https://teams.microsoft.com/'
+
 const MATCH_URLS = [
   'https://teams.microsoft.com/*',
   'https://*.teams.microsoft.com/*',
@@ -117,6 +127,176 @@ function makePicks(candidates) {
   for (const c of candidates.filter((x) => /EduAssignments|EduRoster/i.test(x.scp || ''))) add('graph', c)
 
   return picks
+}
+
+/* ---------------- background sign-in (no Teams UI) ---------------- */
+
+/** Tokens that can actually read education data: edu scopes, or the edu audience. */
+const hasEduScopes = (p) => /EduAssignments|EduRoster/i.test(p?.scp || '')
+const resolvesRefresh = (p) => hasEduScopes(p) || isEduAud(p?.aud)
+const hasUsableTokenSource = (candidates) => candidates.some((c) => hasEduScopes(c) || isEduAud(c.aud))
+
+const isTeamsUrl = (url) => typeof url === 'string' && url.length <= 2048 && TEAMS_URL_RE.test(url)
+
+/** Prefer URLs that look like they open the Assignments experience. */
+function triggerScore(url) {
+  let score = 0
+  if (/\/school\/assignments/i.test(url)) score += 6
+  if (/assignments/i.test(url)) score += 3
+  if (/\/l\/entity\//i.test(url)) score += 2
+  if (/#\/[^?#]*assign/i.test(url)) score += 2
+  if (/\/v2\/?(?:$|[?#])/i.test(url)) score -= 2
+  return score
+}
+
+/** Remember the URL(s) that emitted an education-scoped token. */
+async function rememberTrigger(sender, payload) {
+  let tabUrl = ''
+  try {
+    if (sender?.tab?.id != null) tabUrl = (await chrome.tabs.get(sender.tab.id))?.url || sender.tab.url || ''
+  } catch {
+    /* tab closed already */
+  }
+  const frameUrl = typeof payload?.pageUrl === 'string' ? payload.pageUrl : ''
+  const fresh = [tabUrl, frameUrl].filter(isTeamsUrl)
+  if (!fresh.length) return
+  const store = await chrome.storage.local.get(TRIGGER_KEY)
+  const prev = store?.[TRIGGER_KEY]?.candidates || []
+  const all = []
+  const add = (url) => {
+    if (!isTeamsUrl(url) || all.some((c) => c.url === url)) return
+    all.push({ url })
+  }
+  fresh.forEach(add)
+  prev.forEach((c) => add(c.url))
+  all.sort((a, b) => triggerScore(b.url) - triggerScore(a.url))
+  const candidates = all.slice(0, 3)
+  if (candidates.map((c) => c.url).join('\n') === prev.map((c) => c.url).join('\n')) return
+  await chrome.storage.local.set({ [TRIGGER_KEY]: { candidates, ts: Date.now() } })
+}
+
+/** Trigger URLs to replay, best first: learned, then a cached assignment deep link. */
+async function getTriggerUrls() {
+  const urls = []
+  let learned = false
+  const add = (u) => {
+    if (isTeamsUrl(u) && !urls.includes(u)) urls.push(u)
+  }
+  try {
+    const store = await chrome.storage.local.get([TRIGGER_KEY, CACHE_KEY])
+    const remembered = store?.[TRIGGER_KEY]?.candidates || []
+    learned = remembered.length > 0
+    for (const c of remembered) add(c.url)
+    for (const a of store?.[CACHE_KEY]?.assignments || []) {
+      if (urls.length > 1) break
+      if (!isTeamsUrl(a?.webUrl)) continue
+      learned = true
+      add(a.webUrl) // educationAssignment.webUrl deep-links straight into the app
+    }
+  } catch {
+    /* fall through to Teams home */
+  }
+  if (!urls.length) urls.push(TEAMS_HOME)
+  return { urls: urls.slice(0, REFRESH_BUDGET.length), learned }
+}
+
+/* Waiters resolved when the Assignments client mints a usable token. */
+const eduWaiters = new Set()
+
+function notifyEduToken() {
+  for (const w of [...eduWaiters]) w()
+}
+
+function waitForCapturedEduToken(ms) {
+  if (!(ms > 0)) return Promise.resolve(false)
+  return new Promise((resolve) => {
+    let timer = 0
+    const onToken = () => {
+      clearTimeout(timer)
+      eduWaiters.delete(onToken)
+      resolve(true)
+    }
+    timer = setTimeout(() => {
+      eduWaiters.delete(onToken)
+      resolve(false)
+    }, ms)
+    eduWaiters.add(onToken)
+  })
+}
+
+let refreshInFlight = null
+
+function backgroundSignIn(opts = {}) {
+  if (refreshInFlight) return refreshInFlight
+  const p = runBackgroundSignIn(opts).finally(() => {
+    if (refreshInFlight === p) refreshInFlight = null
+  })
+  refreshInFlight = p
+  return p
+}
+
+/**
+ * Open the Assignments deep link in a background tab, wait for the education
+ * token, then close it. If nothing arrives (expired Microsoft session) the tab is
+ * surfaced so the sign-in can be completed once — that part cannot be automated.
+ */
+async function runBackgroundSignIn({ force = false } = {}) {
+  const { candidates } = await getCandidates()
+  if (!force && hasUsableTokenSource(candidates)) return { attempted: false, ok: true, reused: true }
+
+  const { urls, learned } = await getTriggerUrls()
+  if (!learned) {
+    // Cold start: the deep link is unknown, so a hidden tab could only show the
+    // Teams home without ever requesting education scopes. Surface it instead.
+    await openTeams()
+    return { attempted: true, ok: false, code: 'no-trigger', url: urls[0] }
+  }
+
+  const last = await chrome.storage.session.get(REFRESH_KEY).catch(() => null)
+  const lastAt = last?.[REFRESH_KEY] || 0
+  if (!force && Date.now() - lastAt < REFRESH_COOLDOWN) return { attempted: false, ok: false, code: 'cooldown' }
+  await chrome.storage.session.set({ [REFRESH_KEY]: Date.now() }).catch(() => {})
+
+  let tab = null
+  for (let i = 0; i < urls.length; i++) {
+    try {
+      tab = tab ? await chrome.tabs.update(tab.id, { url: urls[i] }) : await chrome.tabs.create({ url: urls[i], active: false })
+    } catch {
+      continue
+    }
+    if (!tab?.id) continue
+    const budget = REFRESH_BUDGET[i] ?? REFRESH_BUDGET[REFRESH_BUDGET.length - 1]
+    if (await waitForCapturedEduToken(budget)) {
+      await chrome.tabs.remove(tab.id).catch(() => {})
+      return { attempted: true, ok: true, url: urls[i] }
+    }
+  }
+  if (!tab?.id) return { attempted: true, ok: false, code: 'error' }
+  // Surface the tab only when we genuinely could not get a token.
+  await chrome.tabs.update(tab.id, { active: true }).catch(() => {})
+  try {
+    await chrome.windows?.update?.(tab.windowId, { focused: true })
+  } catch {
+    /* ignore */
+  }
+  return { attempted: true, ok: false, code: 'needs-login', tabId: tab.id, url: urls[0] }
+}
+
+/** Open (or focus) Teams at the learned Assignments URL — used by recovery buttons. */
+async function openTeams() {
+  const { urls } = await getTriggerUrls()
+  const url = urls[0] || TEAMS_HOME
+  const tabs = await chrome.tabs.query({ url: MATCH_URLS }).catch(() => [])
+  const hit = (tabs || []).find((t) => t.url === url) || (tabs || [])[0]
+  if (hit?.id != null) {
+    await chrome.tabs.update(hit.id, { active: true }).catch(() => {})
+    try {
+      await chrome.windows?.update?.(hit.windowId, { focused: true })
+    } catch {}
+    return { ok: true, url, reused: true }
+  }
+  await chrome.tabs.create({ url, active: true }).catch(() => {})
+  return { ok: true, url }
 }
 
 /* ---------------- graph strategy ---------------- */
@@ -402,8 +582,7 @@ async function writeDetailCache(map, key, assignment, strategy) {
 
 let syncInFlight = null
 
-async function doSync() {
-  const { candidates, seen } = await getCandidates()
+async function runPicks({ candidates, seen }) {
   const picks = makePicks(candidates)
   if (!picks.length) {
     return {
@@ -411,8 +590,7 @@ async function doSync() {
       code: 'no-token',
       meta: {
         seen: seen.map((s) => s.aud),
-        hint:
-          'Reload the Teams tab (extensions inject into pages only on load), then click around in Teams Web so a token is issued, and hit Refresh here.',
+        hint: 'No Teams session is available yet. Teams is opened in a background tab for you; if it asks you to sign in, finish that once and hit Refresh.',
       },
     }
   }
@@ -436,10 +614,35 @@ async function doSync() {
   return allFailed(picks, seen, attempts)
 }
 
+/** 401/403 mean the session exists but lacks what we need → a refresh can fix it. */
+function isAuthFailure(res) {
+  if (!res || res.ok) return false
+  if (res.code === 'forbidden' || res.code === 'expired') return true
+  return (res.meta?.attempts || []).some((a) => a.status === 401 || a.status === 403)
+}
+
+async function doSync({ auto = false } = {}) {
+  let auth = null
+  let state = await getCandidates()
+  if (auto && !hasUsableTokenSource(state.candidates)) {
+    auth = await backgroundSignIn()
+    if (auth?.ok) state = await getCandidates()
+  }
+  let res = await runPicks(state)
+  // An existing token can still turn out to lack the education scopes (403) — that
+  // is the other case the Assignments client fixes, so retry once behind a tab.
+  if (!auth && auto && isAuthFailure(res)) {
+    auth = await backgroundSignIn({ force: true })
+    if (auth?.ok) res = await runPicks(await getCandidates())
+  }
+  if (!res.ok) res.meta = { ...(res.meta || {}), autoRefresh: auth || { attempted: false } }
+  return res
+}
+
 /** Coalesce concurrent syncs (initial paint + manual refresh) onto one request. */
-function sharedSync() {
+function sharedSync(opts = {}) {
   if (!syncInFlight) {
-    syncInFlight = doSync()
+    syncInFlight = doSync(opts)
       .then(async (res) => {
         if (res?.ok) {
           const cache = { ts: res.data.ts, classes: res.data.classes, assignments: res.data.assignments, submissions: res.data.submissions }
@@ -724,8 +927,8 @@ async function doSubmission(payload) {
 }
 
 async function clearData() {
-  await chrome.storage.session.remove([CANDIDATES_KEY, SEEN_KEY])
-  await chrome.storage.local.remove([CACHE_KEY, SNAPSHOT_KEY, DETAILS_KEY, ...LEGACY_LOCAL_KEYS])
+  await chrome.storage.session.remove([CANDIDATES_KEY, SEEN_KEY, REFRESH_KEY])
+  await chrome.storage.local.remove([CACHE_KEY, SNAPSHOT_KEY, DETAILS_KEY, TRIGGER_KEY, ...LEGACY_LOCAL_KEYS])
   return { ok: true }
 }
 
@@ -734,9 +937,16 @@ async function clearData() {
 chrome.runtime.onMessage.addListener((req, sender, respond) => {
   const type = req?.type
   if (type === MSG.TOKEN) {
-    if (req.payload?.token)
-      saveToken(req.payload)
-        .then(() => respond?.({ ok: true }))
+    const p = req.payload
+    if (p?.token)
+      saveToken(p)
+        .then(() => {
+          if (resolvesRefresh(p)) {
+            notifyEduToken()
+            rememberTrigger(sender, p).catch(() => {})
+          }
+          respond?.({ ok: true })
+        })
         .catch(() => {})
     else respond?.({ ok: false })
     return true
@@ -755,8 +965,14 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
     respond?.({ ok: true })
     return
   }
+  if (type === MSG.OPEN_TEAMS) {
+    openTeams()
+      .then((res) => respond?.(res))
+      .catch(() => respond?.({ ok: false }))
+    return true
+  }
   if (type === MSG.SYNC) {
-    sharedSync()
+    sharedSync(req.payload || {})
       .then((res) => respond?.(res))
       .catch(() => respond?.({ ok: false, code: 'error' }))
     return true

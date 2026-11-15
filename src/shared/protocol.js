@@ -5,11 +5,12 @@
 // Message types sent over chrome.runtime messaging
 export const MSG = {
   // content bridge -> service worker
-  TOKEN: 'mad3/token',            // { payload: {token, expMs, scp} }
+  TOKEN: 'mad3/token',            // { payload: {token, expMs, scp, pageUrl} }
   SNAPSHOT: 'mad3/snapshot',      // { payload: {url, ok, body} } raw edu JSON seen on the wire
   // dashboard -> service worker
   OPEN_DASHBOARD: 'mad3/open-dashboard', // injected FAB -> SW (open the full dashboard tab)
-  SYNC: 'mad3/sync',              // {} -> { ok, code?, data?, meta? }
+  OPEN_TEAMS: 'mad3/open-teams',  // {} -> { ok, url }  open/activate the learned Assignments URL
+  SYNC: 'mad3/sync',              // { auto? } -> { ok, code?, data?, meta? }
   DETAIL: 'mad3/detail',          // { classId, id } -> { ok, code?, assignment? }
   SUBMIT: 'mad3/submit',          // { classId, id, submissionId?, action: 'submit'|'unsubmit' } -> { ok, error? }
   SUBMISSION: 'mad3/submission',  // { op: 'list'|'addLink'|'addFile'|'remove'|'openFile', classId, assignmentId, ... }

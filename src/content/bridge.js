@@ -27,8 +27,11 @@ window.addEventListener('message', (event) => {
     if (event.source !== window) return
     const d = event.data
     if (!d || d[WINDOW_MARKER] !== true) return
-    if (d.type === WT.TOKEN) send(MSG.TOKEN, d.payload)
-    else if (d.type === WT.SNAPSHOT) send(MSG.SNAPSHOT, d.payload)
+    if (d.type === WT.TOKEN) {
+      // pageUrl is the URL of the frame that emitted the token: when it carries
+      // education scopes, that URL is the deep link worth replaying later.
+      send(MSG.TOKEN, { ...d.payload, pageUrl: location.href })
+    } else if (d.type === WT.SNAPSHOT) send(MSG.SNAPSHOT, d.payload)
   } catch {}
 })
 

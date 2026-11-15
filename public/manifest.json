@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Assignments+ — Material UI for Teams",
   "short_name": "Assignments+",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "A Material 3 alternative frontend for Teams Assignments, for students. Read, attach work to, and turn in your own assignments via the session you already have in Teams Web.",
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [

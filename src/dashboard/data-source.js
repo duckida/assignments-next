@@ -57,8 +57,11 @@ function extSource() {
         return null
       }
     },
-    sync() {
-      return send(MSG.SYNC)
+    sync({ auto } = {}) {
+      return send(MSG.SYNC, { auto: !!auto })
+    },
+    openTeams() {
+      return send(MSG.OPEN_TEAMS)
     },
     detail({ classId, id }) {
       return send(MSG.DETAIL, { classId, id })
@@ -110,6 +113,12 @@ function demoSource() {
     async sync() {
       await new Promise((r) => setTimeout(r, 420))
       return { ok: true, data: wrapData(buildDemoData()), meta: { demo: true, upn: 'student@demo.edu' } }
+    },
+    async openTeams() {
+      try {
+        window.open('https://teams.microsoft.com', '_blank', 'noopener')
+      } catch {}
+      return { ok: true }
     },
     async detail({ id }) {
       await new Promise((r) => setTimeout(r, 180))

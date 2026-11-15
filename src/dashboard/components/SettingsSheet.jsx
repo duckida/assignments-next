@@ -82,6 +82,25 @@ export default function SettingsSheet({ open, onClose, theme, setTheme, source, 
                     </div>
                   </div>
                 ) : null}
+                {meta?.autoRefresh?.attempted ? (
+                  <div className="setrow" style={{ alignItems: 'flex-start' }}>
+                    <Icon name="tab" size={20} />
+                    <div className="grow">
+                      <div className="t-body-m">
+                        {meta.autoRefresh.ok
+                          ? 'Session refreshed in a background tab'
+                          : meta.autoRefresh.code === 'needs-login'
+                            ? 'Background refresh needs a sign-in'
+                            : meta.autoRefresh.code === 'no-trigger'
+                              ? 'Waiting for the Assignments deep link'
+                              : 'Background refresh did not get a token'}
+                      </div>
+                      <div className="note" style={{ wordBreak: 'break-word' }}>
+                        {meta.autoRefresh.url || 'Teams Assignments deep link'}
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </>
             ) : null}
             <div style={{ display: 'flex', gap: 10, marginTop: 8, flexWrap: 'wrap' }}>

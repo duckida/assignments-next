@@ -1,11 +1,12 @@
 {
   "name": "assignments-next",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "type": "module",
   "description": "Material 3 alternative frontend for Teams Assignments (student view) as a browser extension",
   "scripts": {
     "build": "node scripts/build-extension.mjs",
+    "test": "node scripts/test-background.mjs",
     "icons": "python3 scripts/make-icons.py",
     "dev": "vite"
   },

@@ -30,6 +30,16 @@ Relevant enums — assignment `status`: `draft, scheduled, published, assigned, 
 - What still works: the **`Authorization: Bearer` header** the Teams tab itself sends. This extension hooks `fetch`/`XMLHttpRequest` in the page's MAIN world, decodes each JWT, and keeps only tokens whose audience is Microsoft Graph (`aud = 00000003-0000-0000-c000-000000000000`). The token is used exactly as the Teams tab uses it — read-only, on-device, never uploaded anywhere.
 - If a 403 occurs (token lacks education scopes), open the Assignments tab inside Teams Web once so the client requests the right scope, then Refresh.
 
+### Signing in without going through Teams
+
+The education scopes (`EduAssignments.*`, `EduRoster.*`) are **admin-consent required** in Entra, and in a school tenant the consent already granted is the one for Teams. So a student cannot mint an equivalent token themselves: no app registration, device-code flow, or Graph Explorer session will be allowed to request those scopes. The token has to come from the Assignments client.
+
+What the extension can do is stop making you drive it:
+
+1. The first time an education-scoped token is seen, the service worker records the URL of the tab **and** of the frame that emitted it (`mad3.eduTrigger.v1`) — that is the deep link that makes the Assignments client run.
+2. On any user-initiated sync without a usable token (or after a 403), it opens that URL in a **background tab** (`active: false`), waits up to ~18 s for an education token, then closes the tab and retries — no Teams UI involved.
+3. If nothing arrives, the Microsoft session itself has expired: the tab is surfaced once so the sign-in can be completed, which is the one step that cannot be automated.
+
 ## Architecture
 
 ```
@@ -56,13 +66,14 @@ Data normalization is shared (`src/shared/normalize.js`), so the demo and live p
 npm install
 npm run icons   # one-off: regenerate extension icons (PIL)
 npm run build   # → dist/  (esbuild for extension glue + Vite for the React pages)
+npm test        # service-worker smoke test: mock chrome API, no browser needed
 ```
 
 Then load `dist/` as an unpacked extension (`chrome://extensions` → Developer mode → *Load unpacked*).
 
 ## Usage
 
-1. Open **teams.microsoft.com** (or `*.cloud.microsoft`) and sign in — browse a little so a Graph token is issued.
+1. Open the extension (toolbar icon or the floating **A+** button in Teams). It pulls a session by itself: if there is none, a Teams tab opens in the background on the Assignments deep link. The only manual step ever is signing in to Microsoft when that session has expired.
 2. Click the extension toolbar icon (or the floating **A+** button in Teams) to open the dashboard.
 3. Views: **Overdue / Upcoming / Done**, per-class filter chips, sections Due today → Next few days → Later.
 4. Click a card for the detail sheet: instructions (images included), resources, your grade + teacher feedback, *Open in Teams*.
@@ -87,7 +98,8 @@ Then load `dist/` as an unpacked extension (`chrome://extensions` → Developer 
 
 ## Limits
 
-- If the Teams session expires, refresh the Teams tab (a new token is minted) and hit Refresh.
-- Passive capture requires the Teams tab to be open at least once per browser session.
+- Access tokens live ~1 hour and refresh tokens sit in MSAL's encrypted cache, so a background tab is spun up roughly once an hour (or whenever Teams' token is gone). That costs a few seconds, not a click.
+- The very first sign-in, and any time the Microsoft session expires, still needs the surfaced Teams tab once.
+- Passive capture requires a Teams tab to be open at least once per browser session; after that the background refresh replaces it.
 - v1.0 `me/assignments` is lean by design; instructions/attachments are fetched per-assignment on demand.
 - Attachments upload through the extension: files are capped at 20 MB, and the assignment must allow student-added resources (Teams enforces the same rule).

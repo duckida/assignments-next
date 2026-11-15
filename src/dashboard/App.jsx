@@ -48,7 +48,9 @@ export default function App() {
     async ({ silent } = {}) => {
       setSyncing(true)
       try {
-        const res = await source.sync()
+        // A user-initiated sync may pull a token in a background Teams tab; silent
+        // background refreshes never open tabs behind the user's back.
+        const res = await source.sync({ auto: !silent })
         if (res?.ok && res.data) {
           setData(res.data)
           setMeta(res.meta || null)
@@ -57,7 +59,16 @@ export default function App() {
           const code = res?.code || 'error'
           setPhase(code === 'no-token' ? 'no-token' : code === 'forbidden' || code === 'expired' ? 'forbidden' : 'error')
           setMeta(res?.meta || null)
-          if (!silent) notify(code === 'no-token' ? 'No Teams session token yet — open Teams Web once.' : 'Sync failed.')
+          if (!silent) {
+            const auth = res?.meta?.autoRefresh
+            notify(
+              code === 'no-token' || code === 'expired'
+                ? auth?.code === 'needs-login'
+                  ? 'Microsoft sign-in needed — finish it in the Teams tab.'
+                  : 'No Teams session yet.'
+                : 'Sync failed.'
+            )
+          }
         }
       } catch {
         setPhase('error')
@@ -197,6 +208,13 @@ export default function App() {
   }, [source, notify, refresh])
 
   const todoCount = useMemo(() => rows.filter((a) => a.state.progress === 'todo' || a.state.progress === 'reassigned').length, [rows])
+  const autoRefresh = meta?.autoRefresh || null
+  const openTeams = useCallback(() => {
+    try {
+      const r = source.openTeams?.()
+      if (r && typeof r.catch === 'function') r.catch(() => {})
+    } catch {}
+  }, [source])
   const failureBody = useMemo(() => {
     if (!meta) return 'Captured token(s) failed against every known assignments API. Open Settings for diagnostics.'
     const attempts = Array.isArray(meta.attempts)
@@ -315,14 +333,22 @@ export default function App() {
           {phase === 'no-token' ? (
             <StateAction
               icon="lock"
-              headline="No session token yet"
-              body="Reload your open Teams tab (extensions only inject on page load), then browse to Assignments in Teams Web so a token is issued. Then hit Refresh."
+              headline={autoRefresh?.code === 'needs-login' ? 'Sign in to Microsoft' : 'No session yet'}
+              body={
+                autoRefresh?.code === 'needs-login'
+                  ? 'Teams opened in a background tab, but your Microsoft session has expired. Finish the sign-in in that tab once — after that, syncing happens out of sight.'
+                  : autoRefresh?.code === 'no-trigger'
+                    ? 'Teams is open. Visit Assignments there once so the extension learns the deep link — after that a background tab handles the session and you never have to go back.'
+                    : autoRefresh?.attempted
+                      ? 'Teams was opened in the background, but no assignment token arrived. If a Teams tab is showing, open Assignments there once, then hit Retry.'
+                      : 'Open Teams once and visit Assignments, then hit Retry. From then on the extension refreshes the session in a background tab.'
+              }
               actions={
                 <>
-                  <a className="btn btn-filled btn-md" href="https://teams.microsoft.com" target="_blank" rel="noreferrer">
+                  <button type="button" className="btn btn-filled btn-md" onClick={openTeams}>
                     <Icon name="open_in_new" size={18} />
-                    Open Teams Web
-                  </a>
+                    Open Teams
+                  </button>
                   <button type="button" className="btn btn-text btn-md" onClick={() => refresh({ silent: false })}>
                     Retry
                   </button>
@@ -336,10 +362,10 @@ export default function App() {
               body={meta?.hint || 'Open the Assignments tab inside Teams Web once so your session requests education scopes, then Refresh.'}
               actions={
                 <>
-                  <a className="btn btn-filled btn-md" href="https://teams.microsoft.com" target="_blank" rel="noreferrer">
+                  <button type="button" className="btn btn-filled btn-md" onClick={openTeams}>
                     <Icon name="open_in_new" size={18} />
-                    Open Teams Web
-                  </a>
+                    Open Teams
+                  </button>
                   <button type="button" className="btn btn-text btn-md" onClick={() => refresh({ silent: false })}>
                     Retry
                   </button>
