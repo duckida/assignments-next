@@ -6,7 +6,8 @@ const fmtTime = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 's
 
 function resourceLink(r) {
   const res = r?.resource || {}
-  return res.link || res.webUrl || null
+  // educationLinkResource → link, educationFileResource/Media → fileUrl/webUrl
+  return res.link || res.webUrl || res.fileUrl || null
 }
 
 function resourceIcon(r) {
@@ -30,7 +31,7 @@ const hostnameOf = (url) => {
 }
 
 /** Modal popup (desktop): full assignment detail — instructions, resources, grade + feedback. */
-export default function DetailSheet({ open, vm, cls, detail, source, onClose }) {
+export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, onClose }) {
   useEffect(() => {
     if (!open) return
     const onKey = (e) => e.key === 'Escape' && onClose?.()
@@ -42,6 +43,30 @@ export default function DetailSheet({ open, vm, cls, detail, source, onClose }) 
   const instructionsHtml = useMemo(() => sanitizeHtml(d?.instructions?.content || ''), [d])
   const resources = useMemo(() => (Array.isArray(d?.resources) ? d.resources : []), [d])
   const webUrl = d?.webUrl || vm?.webUrl || cls?.webUrl || 'https://teams.microsoft.com'
+
+  // turn-in state: two-step confirm (turning in is visible to the teacher)
+  const [confirming, setConfirming] = useState(false)
+  const [turnBusy, setTurnBusy] = useState(false)
+  const [turnErr, setTurnErr] = useState('')
+  useEffect(() => {
+    setConfirming(false)
+    setTurnBusy(false)
+    setTurnErr('')
+  }, [vm?.id, open])
+
+  const turnIn = async (action) => {
+    if (turnBusy) return
+    if (action === 'submit' && !confirming) {
+      setConfirming(true)
+      return
+    }
+    setTurnBusy(true)
+    setTurnErr('')
+    const res = await onTurnIn?.(vm, action)
+    setTurnBusy(false)
+    if (res?.ok) setConfirming(false)
+    else setTurnErr(res?.error || 'Turn-in failed — check your Teams session and retry.')
+  }
 
   // resolve <title> of resource links (server-fetched in the SW, cached)
   const [titles, setTitles] = useState({})
@@ -68,9 +93,13 @@ export default function DetailSheet({ open, vm, cls, detail, source, onClose }) 
   const isSubmitted = vm.state.progress === 'submitted'
   const isReassigned = vm.state.progress === 'reassigned'
   const isExcused = vm.state.progress === 'excused'
+  const isTodo = vm.state.progress === 'todo'
   // the status banner already shows due info except for these states
   const bannerShowsDue = !isExcused && !isReassigned && !isSubmitted
   const className = cls?.name || vm.className || 'Class'
+  // turn in: any unsubmitted work; undo: only plain "submitted" (not graded/returned/returned-for-changes)
+  const canTurnIn = !!(sub?.id && (isTodo || isReassigned))
+  const canUnsubmit = !!(sub?.id && isSubmitted)
 
   return (
     <>
@@ -217,12 +246,43 @@ export default function DetailSheet({ open, vm, cls, detail, source, onClose }) 
                 ) : null}
 
                 <div className="gap-h" />
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <a className="btn btn-filled btn-md" href={webUrl} target="_blank" rel="noreferrer">
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
+                  {canTurnIn ? (
+                    <>
+                      <button type="button" className="btn btn-filled btn-md" disabled={turnBusy} onClick={() => turnIn('submit')}>
+                        <Icon name={turnBusy ? 'sync' : 'task_alt'} size={18} cls={turnBusy ? 'spin' : ''} />
+                        {turnBusy ? 'Turning in…' : confirming ? 'Confirm turn-in' : 'Turn in'}
+                      </button>
+                      {confirming && !turnBusy ? (
+                        <button type="button" className="btn btn-text btn-md" onClick={() => setConfirming(false)}>
+                          Cancel
+                        </button>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {canUnsubmit ? (
+                    <button type="button" className="btn btn-tonal btn-md" disabled={turnBusy} onClick={() => turnIn('unsubmit')}>
+                      <Icon name={turnBusy ? 'sync' : 'undo'} size={18} cls={turnBusy ? 'spin' : ''} />
+                      {turnBusy ? 'Undoing…' : 'Undo turn-in'}
+                    </button>
+                  ) : null}
+                  <a className={canTurnIn || canUnsubmit ? 'btn btn-tonal btn-md' : 'btn btn-filled btn-md'} href={webUrl} target="_blank" rel="noreferrer">
                     <Icon name="open_in_new" size={18} />
                     Open in Teams
                   </a>
                 </div>
+                {turnErr ? (
+                  <div className="stateinfo late" style={{ marginTop: 10 }}>
+                    <Icon name="error" size={20} />
+                    <span>{turnErr}</span>
+                  </div>
+                ) : null}
+                {canTurnIn && confirming && !turnBusy ? (
+                  <div className="stateinfo info" style={{ marginTop: 10 }}>
+                    <Icon name="info" size={20} />
+                    <span>Turn this in? Your teacher will see it as submitted and it moves to Done.</span>
+                  </div>
+                ) : null}
               </>
             )}
           </div>

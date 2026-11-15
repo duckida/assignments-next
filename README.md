@@ -2,7 +2,7 @@
 
 # Assignments+ — Material UI for Teams Assignments
 
-A **student-side, read-only** alternative frontend for Microsoft Teams Assignments, built as a browser extension (Manifest V3) with a React + Vite Material 3 dashboard.
+A **student-side** alternative frontend for Microsoft Teams Assignments, built as a browser extension (Manifest V3) with a React + Vite Material 3 dashboard. It reads your assignments and can turn them in (or undo a turn-in) using the same Teams Web session you already have.
 
 ## Research: what's actually going on in Teams Web
 
@@ -16,6 +16,8 @@ The endpoints in the original spec (`edu.microsoft.com`, `ts.accessToken`) don't
 | Your classes | `GET /v1.0/education/me/classes` | `EduRoster.ReadBasic`. Fallback: `GET /v1.0/me/joinedTeams` (class team id == education class id). |
 | Your submission + grade | `GET /v1.0/education/classes/{c}/assignments/{a}/submissions?$expand=outcomes` | Students only ever see their own submission; `outcomes` carries `educationPointsOutcome` (score) and `educationFeedbackOutcome` (teacher feedback). |
 | Full detail (instructions + attachments) | `GET /v1.0/education/classes/{c}/assignments/{a}?$expand=resources` | `educationAssignment.instructions` (itemBody HTML) + `resources`. |
+| Turn in / undo | `POST /v1.0/education/classes/{c}/assignments/{a}/submissions/{s}/submit` (and `…/unsubmit`) | Needs `EduAssignments.ReadWrite*`. Same action Teams Web performs; `working → submitted → working`. |
+| Class display name for a classId | `GET /v1.0/education/classes/{id}?$select=id,displayName` | Used as a batched backfill when the roster list is empty or its ids don't line up with `classId`. |
 | Deep link back into Teams | `educationAssignment.webUrl` | Official property — no deep-link reverse engineering needed. |
 
 Relevant enums — assignment `status`: `draft, scheduled, published, assigned, inactive`; submission `status`: `excused, reassigned, returned, submitted, working`.
@@ -60,16 +62,25 @@ Then load `dist/` as an unpacked extension (`chrome://extensions` → Developer 
 
 1. Open **teams.microsoft.com** (or `*.cloud.microsoft`) and sign in — browse a little so a Graph token is issued.
 2. Click the extension toolbar icon (or the floating **A+** button in Teams) to open the dashboard.
-3. Views: **To do / Done / All**, per-class filter chips, sections Overdue → Due today → Next few days → Later.
-4. Click a card for the detail sheet: instructions, resources, your grade + teacher feedback, *Open in Teams*.
-5. No token / no scopes / expired session each get a dedicated recovery screen.
-6. `preview.html` in `dist/` shows the full UI on demo data without any account.
+3. Views: **Overdue / Upcoming / Done**, per-class filter chips, sections Due today → Next few days → Later.
+4. Click a card for the detail sheet: instructions (images included), resources, your grade + teacher feedback, *Open in Teams*.
+5. **Turn in** straight from the detail sheet (two-step confirm), and **Undo turn-in** while a submission is still waiting for grading.
+6. No token / no scopes / expired session each get a dedicated recovery screen.
+7. `preview.html` in `dist/` shows the full UI on demo data without any account.
+
+## Performance notes
+
+- Roster + assignment list are fetched concurrently; per-assignment submission lookups go through `$batch` with parallel chunks.
+- Missing class display names are resolved in a single batched backfill (only when needed).
+- The dashboard paints from the local cache instantly, and assignment details are cached in the service worker for 15 minutes.
+- Detail images lazy-load as you scroll.
 
 ## Security notes
 
 - The token never leaves the browser: stored in `chrome.storage.session` (memory), used only for `graph.microsoft.com`.
-- All reads are exactly what the signed-in student can already do in Teams. Nothing is sent to third parties.
-- Teacher-authored instructions are whitelist-sanitized before rendering.
+- All calls are exactly what the signed-in student can already do in Teams. Nothing is sent to third parties.
+- Turn-in only happens when you press the button — read paths are untouched until then.
+- Teacher-authored instructions are whitelist-sanitized before rendering (images allowed from `http(s)` and inline `data:image` only).
 - Passive snapshots of assignment JSON are size-capped and only retained as an activity hint in settings.
 
 ## Limits

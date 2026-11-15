@@ -9,7 +9,8 @@
 import { MSG } from '../shared/protocol.js'
 import { buildDemoData, demoDetail } from '../shared/demo-data.js'
 
-const CACHE_KEY = 'mad3.cache.v1'
+const CACHE_KEY = 'mad3.cache.v2' // v2: rows carry className (v1 lacked it)
+const LEGACY_KEYS = ['mad3.cache.v1']
 const SNAP_KEY = 'mad3.snapshot.v1'
 
 function hasRuntime() {
@@ -62,13 +63,16 @@ function extSource() {
     detail({ classId, id }) {
       return send(MSG.DETAIL, { classId, id })
     },
+    submit({ classId, id, submissionId, action }) {
+      return send(MSG.SUBMIT, { classId, id, submissionId, action })
+    },
     title(url) {
       return send(MSG.TITLE, { url })
     },
     async clear() {
       await send(MSG.CLEAR)
       try {
-        await chrome.storage.local.remove([CACHE_KEY, SNAP_KEY])
+        await chrome.storage.local.remove([CACHE_KEY, SNAP_KEY, ...LEGACY_KEYS])
       } catch {}
       return true
     },
@@ -93,6 +97,10 @@ function demoSource() {
       await new Promise((r) => setTimeout(r, 180))
       const a = demoDetail(id)
       return a ? { ok: true, assignment: a } : { ok: false, code: 'error' }
+    },
+    async submit() {
+      await new Promise((r) => setTimeout(r, 500))
+      return { ok: true }
     },
     async clear() {
       return true

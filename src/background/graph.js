@@ -60,28 +60,39 @@ export async function graphPaged(token, relPath, { version = 'v1.0', maxPages = 
   return items
 }
 
-/** $batch requests (max 20 per batch). subpaths: array of Graph relative URLs. */
-export async function graphBatch(token, subpaths, { version = 'v1.0' } = {}) {
+/** $batch requests (max 20 per batch). subpaths: array of Graph relative URLs.
+ *  Chunks are sent with limited concurrency (parallel requests instead of serial
+ *  round-trips — the dominant sync cost for large assignment lists).
+ */
+export async function graphBatch(token, subpaths, { version = 'v1.0', concurrency = 4 } = {}) {
   const results = new Map() // subpath -> json|null
-  for (let i = 0; i < subpaths.length; i += 20) {
-    const chunk = subpaths.slice(i, i + 20)
-    const body = {
-      requests: chunk.map((p, j) => ({ id: String(j), method: 'GET', url: p })),
-    }
-    let json
-    try {
-      json = await graphFetch(token, '/$batch', { version, method: 'POST', body })
-    } catch (e) {
-      if (e && e.status === 0) throw e
-      continue // batch endpoint hiccup: leave these subrequests unresolved
-    }
-    const responses = Array.isArray(json?.responses) ? json.responses : []
-    for (const r of responses) {
-      const path = chunk[Number(r.id)]
-      if (!path) continue
-      const okBody = r.status >= 200 && r.status < 300 ? r.body : null
-      results.set(path, okBody)
+  const chunks = []
+  for (let i = 0; i < subpaths.length; i += 20) chunks.push(subpaths.slice(i, i + 20))
+  const queue = [...chunks]
+  let networkErr = null
+  const worker = async () => {
+    while (queue.length) {
+      const chunk = queue.shift()
+      const body = {
+        requests: chunk.map((p, j) => ({ id: String(j), method: 'GET', url: p })),
+      }
+      let json
+      try {
+        json = await graphFetch(token, '/$batch', { version, method: 'POST', body })
+      } catch (e) {
+        if (e && e.status === 0) networkErr = networkErr || e
+        continue // batch endpoint hiccup: leave these subrequests unresolved
+      }
+      const responses = Array.isArray(json?.responses) ? json.responses : []
+      for (const r of responses) {
+        const path = chunk[Number(r.id)]
+        if (!path) continue
+        const okBody = r.status >= 200 && r.status < 300 ? r.body : null
+        results.set(path, okBody)
+      }
     }
   }
+  await Promise.all(Array.from({ length: Math.min(concurrency, chunks.length) }, worker))
+  if (networkErr) throw networkErr
   return results
 }

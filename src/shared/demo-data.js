@@ -138,6 +138,15 @@ export function buildDemoData(now = Date.now()) {
 
   const details = {
     // everything falls back to a generic detail sheet; a few have instructions + resources
+    'as-002': {
+      instructions: {
+        content:
+          '<p>Related rates — sketch the setup before you differentiate. The diagram shows the ladder problem from the warm-up:</p>' +
+          '<p><img src="data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'480\' height=\'140\'%3E%3Crect width=\'100%25\' height=\'100%25\' rx=\'14\' fill=\'%231976D2\' fill-opacity=\'0.12\'/%3E%3Cpath d=\'M24 112 L 104 44 L 184 92 L 264 28 L 344 84 L 456 40\' stroke=\'%231976D2\' stroke-width=\'5\' fill=\'none\' stroke-linecap=\'round\' stroke-linejoin=\'round\'/%3E%3C/svg%3E" alt="Rate-of-change sketch" width="480" height="140"></p>' +
+          '<ol><li>Q1–Q4 (show all steps).</li><li>Q7 is a challenge question — take a real stab at it.</li></ol>',
+      },
+      resources: [],
+    },
     'as-004': {
       instructions: { content: '<div class="grid-directions"><ol><li>Complete <strong>Q1–Q4</strong> on paper.</li><li>Submit a single PDF scan plus your <code>.cs</code> file.</li><li>Late penalty: 5% per day after 4:00 PM.</li></ol></div>' },
       resources: [

@@ -98,8 +98,9 @@ export default function SettingsSheet({ open, onClose, theme, setTheme, source, 
             <div className="prose" style={{ fontSize: 13 }}>
               <strong>About</strong>
               <p>
-                Assignments+ is a student-side reader for Teams Assignments. It reuses the Graph token your own Teams Web
-                tab already holds — read-only, on this device, never uploaded anywhere. No admin permissions involved.
+                Assignments+ is a student-side companion for Teams Assignments. It reuses the session your own Teams Web tab
+                already holds to read your assignments and — only when you press Turn in — to submit them. Everything stays
+                on this device; nothing is uploaded anywhere. No admin permissions involved.
               </p>
             </div>
           </div>

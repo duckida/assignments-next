@@ -159,12 +159,16 @@ function todoFirst(a) {
 /** ---------- instructions sanitizer (dashboard-only, runs in DOM context) ---------- */
 
 const ALLOWED_TAGS = new Set([
-  'P','DIV','BR','B','I','EM','STRONG','U','UL','OL','LI','A','SPAN',
+  'P','DIV','BR','B','I','EM','STRONG','U','UL','OL','LI','A','SPAN','IMG',
   'H1','H2','H3','H4','H5','BLOCKQUOTE','PRE','CODE','TABLE','THEAD','TBODY','TR','TD','TH',
 ])
 const ALLOWED_ATTRS = new Set(['href'])
+// attributes kept on <img> (src validated separately — http(s) or data:image only)
+const IMG_ATTRS = new Set(['src', 'alt', 'title', 'width', 'height'])
 
-/** Whitelist-sanitize teacher-authored instructions HTML. Links open in a new tab. */
+/** Whitelist-sanitize teacher-authored instructions HTML. Links open in a new tab;
+ *  images are kept (lazy-loaded) when their src is http(s) or an inline image.
+ */
 export function sanitizeHtml(html) {
   if (!html) return ''
   let doc
@@ -191,14 +195,24 @@ export function sanitizeHtml(html) {
         }
         for (const attr of Array.from(child.attributes)) {
           const name = attr.name.toLowerCase()
-          const keep = ALLOWED_ATTRS.has(name) && child.tagName.toUpperCase() === 'A'
+          const keep = tag === 'A' ? ALLOWED_ATTRS.has(name) : tag === 'IMG' && IMG_ATTRS.has(name)
           if (!keep) child.removeAttribute(attr.name)
         }
-        if (child.tagName.toUpperCase() === 'A') {
+        if (tag === 'A') {
           const href = child.getAttribute('href') || ''
           if (/^\s*javascript:/i.test(href)) child.removeAttribute('href')
           child.setAttribute('target', '_blank')
           child.setAttribute('rel', 'noopener noreferrer')
+        } else if (tag === 'IMG') {
+          const src = (child.getAttribute('src') || '').trim()
+          // http(s) remote images and inline raster/SVG data images are safe in an <img>
+          // (SVG loaded as an image can never execute script). Anything else is dropped.
+          if (!/^(https?:|data:image\/)/i.test(src)) {
+            child.remove()
+            continue
+          }
+          child.setAttribute('loading', 'lazy')
+          child.setAttribute('decoding', 'async')
         }
       } else if (child.nodeType === 8) {
         child.remove()

@@ -335,6 +335,15 @@ a { color: var(--sys-primary); }
 .prose ol, .prose ul { margin: 4px 0 8px 20px; padding: 0; }
 .prose a { color: var(--sys-primary); text-decoration: underline; }
 .prose h1, .prose h2, .prose h3 { font-size: 15px; margin: 10px 0 6px; color: var(--sys-on-surface); }
+.prose img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+  border-radius: var(--r-s);
+  background: color-mix(in srgb, var(--sys-on-surface) 6%, transparent);
+}
+.prose a img { display: inline-block; }
 .divider { height: 1px; background: var(--sys-outline-var); opacity: 0.6; margin: 14px 0; }
 .sectheader { color: var(--sys-secondary); font-size: 13px; letter-spacing: 0.4px; font-weight: 600; margin: 18px 0 6px; text-transform: uppercase; }
 

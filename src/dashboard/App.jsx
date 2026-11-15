@@ -89,8 +89,17 @@ export default function App() {
 
   /* ---------- view model ---------- */
   const classes = useMemo(() => {
-    const list = data?.classes || []
-    return list.map((c) => ({ id: c.id, name: c.name || c.displayName || 'Class', description: c.description || '', webUrl: c.webUrl || null }))
+    const list = (data?.classes || []).map((c) => ({ id: c.id, name: c.name || c.displayName || 'Class', description: c.description || '', webUrl: c.webUrl || null }))
+    // Fill gaps from per-assignment class names (roster reads can be empty or use
+    // different ids); keeps filter chips and avatars working when data.classes misses.
+    const known = new Set(list.map((c) => c.id))
+    for (const a of data?.assignments || []) {
+      if (a.classId && a.className && !known.has(a.classId)) {
+        known.add(a.classId)
+        list.push({ id: a.classId, name: a.className, description: '', webUrl: null })
+      }
+    }
+    return list
   }, [data])
 
   const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes])
@@ -148,6 +157,34 @@ export default function App() {
       setDetail((cur) => (cur && cur.vm.id === vm.id ? { ...cur, phase: res?.ok ? 'ready' : 'error', raw: res?.assignment || null } : cur))
     },
     [clsFor, source]
+  )
+
+  /* ---------- turn in / undo ---------- */
+  const turnIn = useCallback(
+    async (vm, action) => {
+      const res = await source.submit({ classId: vm.classId, id: vm.id, submissionId: vm.submission?.id || null, action })
+      if (!res?.ok) return { ok: false, error: res?.error || res?.meta?.message || '' }
+      const status = action === 'submit' ? 'submitted' : 'working'
+      const submittedDateTime = action === 'submit' ? new Date().toISOString() : null
+      // update the open sheet immediately…
+      setDetail((cur) => {
+        if (!cur || cur.vm.id !== vm.id) return cur
+        const nv = { ...cur.vm, submission: { ...(cur.vm.submission || {}), status, submittedDateTime } }
+        nv.state = { bucket: dueBucket(nv), progress: progress(nv) }
+        return { ...cur, vm: nv }
+      })
+      // …and the list rows
+      setData((cur) => {
+        if (!cur) return cur
+        const submissions = { ...(cur.submissions || {}) }
+        submissions[vm.id] = { ...(submissions[vm.id] || {}), status, submittedDateTime }
+        return { ...cur, submissions }
+      })
+      notify(action === 'submit' ? 'Turned in.' : 'Turn-in undone.')
+      if (source.kind === 'extension') refresh({ silent: true })
+      return { ok: true }
+    },
+    [source, notify, refresh]
   )
 
   const clearData = useCallback(async () => {
@@ -331,6 +368,7 @@ export default function App() {
         cls={detail?.cls}
         detail={detail ? { phase: detail.phase, raw: detail.raw } : null}
         source={source}
+        onTurnIn={turnIn}
         onClose={() => setDetail(null)}
       />
       <SettingsSheet

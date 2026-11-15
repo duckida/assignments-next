@@ -11,6 +11,7 @@ export const MSG = {
   OPEN_DASHBOARD: 'mad3/open-dashboard', // injected FAB -> SW (open the full dashboard tab)
   SYNC: 'mad3/sync',              // {} -> { ok, code?, data?, meta? }
   DETAIL: 'mad3/detail',          // { classId, id } -> { ok, code?, assignment? }
+  SUBMIT: 'mad3/submit',          // { classId, id, submissionId?, action: 'submit'|'unsubmit' } -> { ok, error? }
   TITLE: 'mad3/title',            // { url } -> { ok, title? }  (fetch link's HTML <title>)
   CLEAR: 'mad3/clear',            // {} -> { ok }
 }
