@@ -542,6 +542,187 @@ async function doSubmit({ classId, id, submissionId, action = 'submit' }) {
   }
 }
 
+/** Student work on a submission: list / add link / upload file / remove.
+ *  File uploads follow Graph's documented flow: setUpResourcesFolder →
+ *  PUT {resourcesFolderUrl}:/{name}:/content → POST educationFileResource.
+ */
+const MAX_UPLOAD_B64 = 28 * 1024 * 1024 // ≈20 MB of file content
+
+async function submissionIdFor(token, classId, assignmentId, submissionId) {
+  if (submissionId) return submissionId
+  const body = await graphFetch(token, `/education/classes/${classId}/assignments/${assignmentId}/submissions`)
+  return Array.isArray(body?.value) && body.value.length ? body.value[0].id : null
+}
+
+function mapResourceList(json) {
+  const arr = Array.isArray(json?.value) ? json.value : []
+  return arr.map((r) => ({
+    id: r.id,
+    displayName: r.resource?.displayName || 'Resource',
+    type: String(r.resource?.['@odata.type'] || ''),
+    link: r.resource?.link || null,
+    fileUrl: r.resource?.fileUrl || null,
+    studentAdded: !r.assignmentResourceUrl,
+    createdTs: r.resource?.createdDateTime ? Date.parse(r.resource.createdDateTime) : null,
+  }))
+}
+
+const hostOf = (url) => {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return 'Link'
+  }
+}
+
+async function addFileResource(token, base, sid, payload) {
+  const name = String(payload.name || '').trim().slice(0, 180)
+  const b64 = String(payload.dataBase64 || '')
+  if (!name) return { ok: false, error: 'Missing file name.' }
+  if (!b64) return { ok: false, error: 'The selected file is empty.' }
+  if (b64.length > MAX_UPLOAD_B64) return { ok: false, error: 'File is too large — the limit is 20 MB.' }
+  let bytes
+  try {
+    bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+  } catch {
+    return { ok: false, error: 'Could not read the file data.' }
+  }
+
+  // 1) the submission's own SharePoint folder (created on first upload)
+  let folderUrl = null
+  try {
+    const sub = await graphFetch(token, `${base}/${sid}`)
+    folderUrl = sub?.resourcesFolderUrl || null
+  } catch {
+    /* fall through to setUpResourcesFolder */
+  }
+  if (!folderUrl) {
+    const created = await graphFetch(token, `${base}/${sid}/setUpResourcesFolder`, { method: 'POST' })
+    folderUrl = created?.resourcesFolderUrl || null
+    if (!folderUrl) {
+      const sub = await graphFetch(token, `${base}/${sid}`)
+      folderUrl = sub?.resourcesFolderUrl || null
+    }
+  }
+  if (!folderUrl) throw new GraphError('no-folder', 500, 'Could not create a submission folder for this assignment.')
+  const m = /\/drives\/([^/]+)\/items\/([^/?#]+)/i.exec(folderUrl)
+  if (!m) throw new GraphError('bad-folder', 500, 'Unexpected resources folder URL from Graph.')
+
+  // 2) upload the bytes, then register the file as a submission resource
+  const item = await graphFetch(token, `${folderUrl}:/${encodeURIComponent(name)}:/content`, {
+    method: 'PUT',
+    rawBody: bytes,
+    contentType: payload.mime || 'application/octet-stream',
+  })
+  if (!item?.id) throw new GraphError('upload-failed', 500, 'The file upload did not complete.')
+  const fileUrl = `https://graph.microsoft.com/v1.0/drives/${m[1]}/items/${item.id}`
+
+  // 3) re-upload case: the PUT above replaced the bytes in the folder, so drop the
+  //    older resource entry for the same name before registering the new one —
+  //    Graph rejects a second file resource for the same file.
+  try {
+    const list = await graphFetch(token, `${base}/${sid}/resources`)
+    for (const r of mapResourceList(list)) {
+      if (r.studentAdded && r.displayName === name) {
+        await graphFetch(token, `${base}/${sid}/resources/${r.id}`, { method: 'DELETE' })
+      }
+    }
+  } catch {
+    /* best effort */
+  }
+  const created = await graphFetch(token, `${base}/${sid}/resources`, {
+    method: 'POST',
+    body: { resource: { '@odata.type': '#microsoft.graph.educationFileResource', displayName: name, fileUrl } },
+  })
+  return { ok: true, resource: mapResourceList({ value: [created] })[0] || null }
+}
+
+async function doSubmission(payload) {
+  const { op = 'list', classId, assignmentId } = payload
+  if (!classId || !assignmentId) return { ok: false, error: 'Missing assignment reference.' }
+  const { candidates, seen } = await getCandidates()
+  const picks = makePicks(candidates).filter((p) => p.strategy === 'graph')
+  if (!picks.length) {
+    return { ok: false, error: 'Attaching work needs a Graph session token. Open Teams Web once, then retry.', meta: { seen: seen.map((s) => s.aud) } }
+  }
+  const base = `/education/classes/${classId}/assignments/${assignmentId}/submissions`
+  const attempts = []
+  let hint = ''
+  for (const pick of picks) {
+    const meta = { upn: pick.meta.upn, strategy: 'graph', seen: seen.map((s) => s.aud), attempt: attemptLabel(pick) }
+    try {
+      // Opening a file doesn't need a submission (teacher resources have none yet).
+      if (op === 'openFile') {
+        // Submission/assignment file resources point at Graph's drive API, which a
+        // browser tab can't open without an auth header. Resolve the SharePoint webUrl.
+        const fileUrl = String(payload.fileUrl || '')
+        if (/^https:\/\/graph\.microsoft\.com\/v1\.0\/drives\//i.test(fileUrl)) {
+          const item = await graphFetch(pick.token, `${fileUrl}?$select=webUrl,name`)
+          if (!item?.webUrl) return { ok: false, error: 'This file has no web link — open it in Teams instead.' }
+          await chrome.tabs.create({ url: item.webUrl })
+          return { ok: true }
+        }
+        if (/^https?:\/\//i.test(fileUrl)) {
+          await chrome.tabs.create({ url: fileUrl })
+          return { ok: true }
+        }
+        return { ok: false, error: 'Unsupported file link.' }
+      }
+
+      const sid = await submissionIdFor(pick.token, classId, assignmentId, payload.submissionId)
+      if (!sid) throw new GraphError('no-submission', 404, 'No submission exists for this assignment yet.')
+
+      if (op === 'list') {
+        // One of the two lists can fail on older tenants; show whichever loads.
+        const [working, submitted] = await Promise.allSettled([
+          graphFetch(pick.token, `${base}/${sid}/resources`),
+          graphFetch(pick.token, `${base}/${sid}/submittedResources`),
+        ])
+        if (working.status === 'rejected' && submitted.status === 'rejected') throw working.reason
+        return {
+          ok: true,
+          resources: mapResourceList(working.status === 'fulfilled' ? working.value : null),
+          submittedResources: mapResourceList(submitted.status === 'fulfilled' ? submitted.value : null),
+        }
+      }
+
+      if (op === 'addLink') {
+        const url = String(payload.url || '').trim()
+        if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'Enter a full http(s) link.' }
+        const name = String(payload.name || '').trim().slice(0, 180) || hostOf(url)
+        const created = await graphFetch(pick.token, `${base}/${sid}/resources`, {
+          method: 'POST',
+          body: { resource: { '@odata.type': '#microsoft.graph.educationLinkResource', displayName: name, link: url } },
+        })
+        return { ok: true, resource: mapResourceList({ value: [created] })[0] || null }
+      }
+
+      if (op === 'addFile') return await addFileResource(pick.token, base, sid, payload)
+
+      if (op === 'remove') {
+        if (!payload.resourceId) return { ok: false, error: 'Missing resource id.' }
+        await graphFetch(pick.token, `${base}/${sid}/resources/${payload.resourceId}`, { method: 'DELETE' })
+        return { ok: true }
+      }
+
+      return { ok: false, error: 'Unknown submission operation.' }
+    } catch (e) {
+      hint =
+        e.status === 403
+          ? 'Your Teams session token lacks EduAssignments.ReadWrite. Open the Assignments tab in Teams Web once, then retry.'
+          : e.hint || hint
+      attempts.push(attemptFromResult(pick, graphFail(e, meta)))
+    }
+  }
+  const first = attempts[0] || {}
+  const baseMsg = first.message && first.message !== first.graphCode ? first.message : ''
+  return {
+    ok: false,
+    error: [baseMsg, hint].filter(Boolean).join(' — ') || 'Couldn’t update your work. Check your Teams session and try again.',
+    meta: { attempts },
+  }
+}
+
 async function clearData() {
   await chrome.storage.session.remove([CANDIDATES_KEY, SEEN_KEY])
   await chrome.storage.local.remove([CACHE_KEY, SNAPSHOT_KEY, DETAILS_KEY, ...LEGACY_LOCAL_KEYS])
@@ -590,6 +771,12 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
     doSubmit(req.payload || {})
       .then((res) => respond?.(res))
       .catch(() => respond?.({ ok: false, error: 'Turn-in failed.' }))
+    return true
+  }
+  if (type === MSG.SUBMISSION) {
+    doSubmission(req.payload || {})
+      .then((res) => respond?.(res))
+      .catch(() => respond?.({ ok: false, error: 'Couldn’t update your work.' }))
     return true
   }
   if (type === MSG.TITLE) {

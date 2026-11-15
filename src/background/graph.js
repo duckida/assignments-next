@@ -12,8 +12,10 @@ export class GraphError extends Error {
 
 const GRAPH = 'https://graph.microsoft.com'
 
-/** GET/POST a Graph path; relPath must start with '/', or be an absolute Graph URL (from nextLink). */
-export async function graphFetch(token, relPath, { version = 'v1.0', method = 'GET', body } = {}) {
+/** GET/POST/PUT/DELETE a Graph path; relPath must start with '/', or be an absolute Graph URL (from nextLink).
+ *  Pass `rawBody` (Uint8Array) for binary uploads — used by submission file resources.
+ */
+export async function graphFetch(token, relPath, { version = 'v1.0', method = 'GET', body, rawBody, contentType } = {}) {
   const url = /^https?:/.test(relPath) ? relPath : `${GRAPH}/${version}${relPath}`
   let res
   try {
@@ -21,9 +23,9 @@ export async function graphFetch(token, relPath, { version = 'v1.0', method = 'G
       method,
       headers: {
         Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+        'Content-Type': contentType || 'application/json',
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: rawBody || (body ? JSON.stringify(body) : undefined),
     })
   } catch (e) {
     throw new GraphError('network', 0, 'Network request to Graph failed', String(e))

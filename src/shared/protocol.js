@@ -12,6 +12,7 @@ export const MSG = {
   SYNC: 'mad3/sync',              // {} -> { ok, code?, data?, meta? }
   DETAIL: 'mad3/detail',          // { classId, id } -> { ok, code?, assignment? }
   SUBMIT: 'mad3/submit',          // { classId, id, submissionId?, action: 'submit'|'unsubmit' } -> { ok, error? }
+  SUBMISSION: 'mad3/submission',  // { op: 'list'|'addLink'|'addFile'|'remove'|'openFile', classId, assignmentId, ... }
   TITLE: 'mad3/title',            // { url } -> { ok, title? }  (fetch link's HTML <title>)
   CLEAR: 'mad3/clear',            // {} -> { ok }
 }

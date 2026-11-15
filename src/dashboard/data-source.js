@@ -66,6 +66,9 @@ function extSource() {
     submit({ classId, id, submissionId, action }) {
       return send(MSG.SUBMIT, { classId, id, submissionId, action })
     },
+    submission(payload) {
+      return send(MSG.SUBMISSION, payload)
+    },
     title(url) {
       return send(MSG.TITLE, { url })
     },
@@ -83,6 +86,21 @@ function extSource() {
 }
 
 function demoSource() {
+  // student work added in the demo lives for the session so add/remove feel real
+  const demoWork = new Map()
+  const workKey = (p) => `${p.classId}|${p.assignmentId}`
+  const workList = (key) => {
+    if (!demoWork.has(key)) {
+      demoWork.set(
+        key,
+        key.endsWith('|as-004')
+          ? [{ id: 'dw-1', displayName: 'checkpoint-spec.pdf', type: '#microsoft.graph.educationFileResource', link: null, fileUrl: 'https://example.com/spec.pdf', studentAdded: true }]
+          : []
+      )
+    }
+    return demoWork.get(key)
+  }
+
   return {
     kind: 'demo',
     async initial() {
@@ -101,6 +119,35 @@ function demoSource() {
     async submit() {
       await new Promise((r) => setTimeout(r, 500))
       return { ok: true }
+    },
+    async submission(p) {
+      await new Promise((r) => setTimeout(r, 240))
+      const key = workKey(p)
+      const list = workList(key)
+      if (p.op === 'list') return { ok: true, resources: list.map((r) => ({ ...r })), submittedResources: [] }
+      if (p.op === 'addLink') {
+        const url = String(p.url || '').trim()
+        if (!/^https?:\/\//i.test(url)) return { ok: false, error: 'Enter a full http(s) link.' }
+        let host = url
+        try {
+          host = new URL(url).hostname.replace(/^www\./, '')
+        } catch {}
+        const displayName = String(p.name || '').trim() || host
+        list.push({ id: `dw-${Date.now()}`, displayName, type: '#microsoft.graph.educationLinkResource', link: url, fileUrl: null, studentAdded: true })
+        return { ok: true }
+      }
+      if (p.op === 'addFile') {
+        if (!p.dataBase64) return { ok: false, error: 'The selected file is empty.' }
+        list.push({ id: `dw-${Date.now()}`, displayName: p.name || 'file', type: '#microsoft.graph.educationFileResource', link: null, fileUrl: null, studentAdded: true })
+        return { ok: true }
+      }
+      if (p.op === 'openFile') return { ok: true, url: 'https://example.com/' }
+      if (p.op === 'remove') {
+        const i = list.findIndex((r) => r.id === p.resourceId)
+        if (i >= 0) list.splice(i, 1)
+        return { ok: true }
+      }
+      return { ok: false, error: 'Unknown submission operation.' }
     },
     async clear() {
       return true

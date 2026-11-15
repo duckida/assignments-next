@@ -17,6 +17,8 @@ The endpoints in the original spec (`edu.microsoft.com`, `ts.accessToken`) don't
 | Your submission + grade | `GET /v1.0/education/classes/{c}/assignments/{a}/submissions?$expand=outcomes` | Students only ever see their own submission; `outcomes` carries `educationPointsOutcome` (score) and `educationFeedbackOutcome` (teacher feedback). |
 | Full detail (instructions + attachments) | `GET /v1.0/education/classes/{c}/assignments/{a}?$expand=resources` | `educationAssignment.instructions` (itemBody HTML) + `resources`. |
 | Turn in / undo | `POST /v1.0/education/classes/{c}/assignments/{a}/submissions/{s}/submit` (and `…/unsubmit`) | Needs `EduAssignments.ReadWrite*`. Same action Teams Web performs; `working → submitted → working`. |
+| Attach work (links / files) | `POST .../submissions/{s}/resources` (`educationLinkResource` / `educationFileResource`) | Needs `EduAssignments.ReadWrite*`. File upload: `setUpResourcesFolder` → `PUT {resourcesFolderUrl}:/{name}:/content` → POST `educationFileResource` with the returned item URL. |
+| Your attached work | `GET .../submissions/{s}/resources` + `…/submittedResources` | Working set vs. what was handed in. |
 | Class display name for a classId | `GET /v1.0/education/classes/{id}?$select=id,displayName` | Used as a batched backfill when the roster list is empty or its ids don't line up with `classId`. |
 | Deep link back into Teams | `educationAssignment.webUrl` | Official property — no deep-link reverse engineering needed. |
 
@@ -64,7 +66,7 @@ Then load `dist/` as an unpacked extension (`chrome://extensions` → Developer 
 2. Click the extension toolbar icon (or the floating **A+** button in Teams) to open the dashboard.
 3. Views: **Overdue / Upcoming / Done**, per-class filter chips, sections Due today → Next few days → Later.
 4. Click a card for the detail sheet: instructions (images included), resources, your grade + teacher feedback, *Open in Teams*.
-5. **Turn in** straight from the detail sheet (two-step confirm), and **Undo turn-in** while a submission is still waiting for grading.
+5. **Attach links or files** to your submission right in the detail sheet (add/remove before turning in), then **Turn in** with a two-step confirm. **Undo turn-in** is available while a submission awaits grading.
 6. No token / no scopes / expired session each get a dedicated recovery screen.
 7. `preview.html` in `dist/` shows the full UI on demo data without any account.
 
@@ -88,3 +90,4 @@ Then load `dist/` as an unpacked extension (`chrome://extensions` → Developer 
 - If the Teams session expires, refresh the Teams tab (a new token is minted) and hit Refresh.
 - Passive capture requires the Teams tab to be open at least once per browser session.
 - v1.0 `me/assignments` is lean by design; instructions/attachments are fetched per-assignment on demand.
+- Attachments upload through the extension: files are capped at 20 MB, and the assignment must allow student-added resources (Teams enforces the same rule).

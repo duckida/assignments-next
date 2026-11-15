@@ -323,13 +323,18 @@ a { color: var(--sys-primary); }
 .gradeblock .maxof { color: color-mix(in srgb, var(--sys-on-primary-container) 75%, transparent); font-size: 13px; margin-left: 8px; }
 .gap-h { height: 12px; }
 .listmini { display: flex; flex-direction: column; gap: 2px; margin: 8px -8px; }
-.listmini > a {
+.listmini > a,
+.listmini > button.reslink {
   display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: var(--r-s);
   color: var(--sys-on-surface); text-decoration: none; font-size: 14px;
+  background: none; border: 0; width: 100%; text-align: left; cursor: pointer;
 }
-.listmini > a:hover { background: color-mix(in srgb, var(--sys-on-surface) 8%, transparent); }
-.listmini > a .icon { color: var(--sys-secondary); flex: none; }
-.listmini > a .ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.listmini > a:hover,
+.listmini > button.reslink:hover { background: color-mix(in srgb, var(--sys-on-surface) 8%, transparent); }
+.listmini > a .icon,
+.listmini > button.reslink .icon { color: var(--sys-secondary); flex: none; }
+.listmini > a .ellipsis,
+.listmini > button.reslink .ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prose { font-size: 14px; line-height: 21px; color: var(--sys-on-surface-var); }
 .prose p { margin: 0 0 8px; }
 .prose ol, .prose ul { margin: 4px 0 8px 20px; padding: 0; }
@@ -344,6 +349,28 @@ a { color: var(--sys-primary); }
   background: color-mix(in srgb, var(--sys-on-surface) 6%, transparent);
 }
 .prose a img { display: inline-block; }
+
+/* ---------- submission work (attachments) ---------- */
+.workrow { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--r-s); }
+.workrow:hover { background: color-mix(in srgb, var(--sys-on-surface) 6%, transparent); }
+.workrow .msym { color: var(--sys-secondary); flex: none; }
+.workrow .ellipsis { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workrow .workname {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer;
+  color: var(--sys-primary);
+}
+.workrow .workname:hover { text-decoration: underline; }
+.workrow .workdel { width: 32px; height: 32px; flex: none; }
+.linkform { display: flex; flex-direction: column; gap: 10px; margin: 4px 0 10px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--sys-on-surface-var); }
+.field input {
+  height: 40px; padding: 0 12px; border-radius: 10px; font-size: 14px;
+  border: 1px solid var(--sys-outline); background: transparent; color: var(--sys-on-surface);
+}
+.field input:focus { border-color: var(--sys-primary); outline: none; }
+.field input::placeholder { color: color-mix(in srgb, var(--sys-on-surface-var) 70%, transparent); }
+.workstat { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; color: var(--sys-primary); }
 .divider { height: 1px; background: var(--sys-outline-var); opacity: 0.6; margin: 14px 0; }
 .sectheader { color: var(--sys-secondary); font-size: 13px; letter-spacing: 0.4px; font-weight: 600; margin: 18px 0 6px; text-transform: uppercase; }
 

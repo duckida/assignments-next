@@ -99,8 +99,9 @@ export default function SettingsSheet({ open, onClose, theme, setTheme, source, 
               <strong>About</strong>
               <p>
                 Assignments+ is a student-side companion for Teams Assignments. It reuses the session your own Teams Web tab
-                already holds to read your assignments and — only when you press Turn in — to submit them. Everything stays
-                on this device; nothing is uploaded anywhere. No admin permissions involved.
+                already holds to read your assignments, attach links or files to your submission, and — only when you press
+                Turn in — to submit them. Everything stays on this device; nothing is uploaded anywhere except your own
+                school account. No admin permissions involved.
               </p>
             </div>
           </div>
