@@ -65,6 +65,7 @@ export function tokenSummary(token) {
     scp,
     app: p.appid || p.azp || p.azpacr ? p.appid || p.azp : p.azp || p.appid || '',
     tid: p.tid || '',
+    oid: p.oid || '',
     upn: p.upn || p.preferred_username || '',
     expMs: p.exp ? p.exp * 1000 : 0,
   }

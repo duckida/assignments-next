@@ -1,3 +1,6 @@
+import { assignmentClassName } from './classes.js'
+import { resourceUrl } from './resources.js'
+
 /** Pure view-model mapping for education assignments. Used by both the live
  * (Graph) path and the demo path so the UI has one data contract.
  */
@@ -11,18 +14,21 @@
  * }} AssignmentVM
  */
 
-const VISIBLE_ASSIGNMENT_STATUSES = new Set(['assigned', 'published', 'inactive', 'unknownFutureValue'])
+const timestamp = (value) => {
+  const ts = value ? Date.parse(value) : NaN
+  return Number.isFinite(ts) ? ts : null
+}
 
 export function mapAssignment(raw) {
   if (!raw || !raw.id || !raw.classId) return null
   return {
     id: raw.id,
     classId: raw.classId,
-    className: raw.className || raw.classDisplayName || null,
+    className: assignmentClassName(raw),
     title: raw.displayName || 'Untitled assignment',
-    dueTs: raw.dueDateTime ? Date.parse(raw.dueDateTime) : null,
-    closeTs: raw.closeDateTime ? Date.parse(raw.closeDateTime) : null,
-    assignedTs: raw.assignedDateTime ? Date.parse(raw.assignedDateTime) : null,
+    dueTs: timestamp(raw.dueDateTime),
+    closeTs: timestamp(raw.closeDateTime),
+    assignedTs: timestamp(raw.assignedDateTime),
     status: raw.status || 'assigned',
     allowLate: raw.allowLateSubmissions ?? null,
     // v1.0 grading: { "@odata.type": "#microsoft.graph.educationAssignmentPointsGradeType", maxPoints: n }
@@ -31,7 +37,7 @@ export function mapAssignment(raw) {
         ? (raw.grading.maxPoints ?? null)
         : null,
     webUrl: raw.webUrl || null,
-    lastModified: raw.lastModifiedDateTime ? Date.parse(raw.lastModifiedDateTime) : null,
+    lastModified: timestamp(raw.lastModifiedDateTime),
   }
 }
 
@@ -58,8 +64,9 @@ export function mapSubmission(raw, assignmentId) {
     assignmentId: assignmentId ?? raw.assignmentId,
     id: raw.id || '',
     status: raw.status || 'working',
-    submittedTs: raw.submittedDateTime ? Date.parse(raw.submittedDateTime) : null,
-    returnedTs: raw.returnedDateTime ? Date.parse(raw.returnedDateTime) : null,
+    submittedTs: timestamp(raw.submittedDateTime),
+    returnedTs: timestamp(raw.returnedDateTime),
+    excusedTs: timestamp(raw.excusedDateTime),
     score,
     feedback,
   }
@@ -149,6 +156,19 @@ export function sortAssignments(list, now = Date.now()) {
   })
 }
 
+/** Done is a history: most recently returned/submitted/excused first. */
+export function sortCompletedAssignments(list) {
+  const recent = (a) => {
+    const events = [a.submission?.returnedTs, a.submission?.submittedTs, a.submission?.excusedTs].filter(Number.isFinite)
+    return events.length ? Math.max(...events) : a.dueTs ?? a.lastModified ?? a.assignedTs ?? -Infinity
+  }
+  return [...list].sort((a, b) => {
+    const left = recent(a)
+    const right = recent(b)
+    return left === right ? a.title.localeCompare(b.title) : right - left
+  })
+}
+
 function todoFirst(a) {
   const p = progress(a)
   if (p === 'todo') return 0
@@ -160,7 +180,7 @@ function todoFirst(a) {
 
 const ALLOWED_TAGS = new Set([
   'P','DIV','BR','B','I','EM','STRONG','U','UL','OL','LI','A','SPAN','IMG',
-  'H1','H2','H3','H4','H5','BLOCKQUOTE','PRE','CODE','TABLE','THEAD','TBODY','TR','TD','TH',
+  'H1','H2','H3','H4','H5','BLOCKQUOTE','PRE','CODE','TABLE','THEAD','TBODY','TR','TD','TH','FIGURE','FIGCAPTION',
 ])
 const ALLOWED_ATTRS = new Set(['href'])
 // attributes kept on <img> (src validated separately — http(s) or data:image only)
@@ -200,17 +220,21 @@ export function sanitizeHtml(html) {
         }
         if (tag === 'A') {
           const href = child.getAttribute('href') || ''
-          if (/^\s*javascript:/i.test(href)) child.removeAttribute('href')
+          const link = resourceUrl(href)
+          if (link) child.setAttribute('href', link)
+          else if (!/^mailto:/i.test(href)) child.removeAttribute('href')
           child.setAttribute('target', '_blank')
           child.setAttribute('rel', 'noopener noreferrer')
         } else if (tag === 'IMG') {
           const src = (child.getAttribute('src') || '').trim()
+          const imageUrl = resourceUrl(src)
           // http(s) remote images and inline raster/SVG data images are safe in an <img>
           // (SVG loaded as an image can never execute script). Anything else is dropped.
-          if (!/^(https?:|data:image\/)/i.test(src)) {
+          if (!imageUrl && !/^data:image\//i.test(src)) {
             child.remove()
             continue
           }
+          if (imageUrl) child.setAttribute('src', imageUrl)
           child.setAttribute('loading', 'lazy')
           child.setAttribute('decoding', 'async')
         }

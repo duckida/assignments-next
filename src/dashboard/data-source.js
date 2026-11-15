@@ -72,6 +72,9 @@ function extSource() {
     submission(payload) {
       return send(MSG.SUBMISSION, payload)
     },
+    resource(payload) {
+      return send(MSG.RESOURCE, payload)
+    },
     title(url) {
       return send(MSG.TITLE, { url })
     },
@@ -128,6 +131,9 @@ function demoSource() {
     async submit() {
       await new Promise((r) => setTimeout(r, 500))
       return { ok: true }
+    },
+    async resource({ op, url }) {
+      return op === 'open' ? { ok: true, url } : { ok: true, isImage: true, dataUrl: url }
     },
     async submission(p) {
       await new Promise((r) => setTimeout(r, 240))

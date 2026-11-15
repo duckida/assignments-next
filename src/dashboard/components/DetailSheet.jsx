@@ -1,36 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import Icon from './Icon.jsx'
-import { sanitizeHtml, dueLabel } from '../../shared/normalize.js'
+import ResourceItem from './ResourceItem.jsx'
+import RichText from './RichText.jsx'
+import { dueLabel } from '../../shared/normalize.js'
+import { bestClassName, assignmentClassName } from '../../shared/classes.js'
+import { describeResource, isGraphUrl } from '../../shared/resources.js'
 
 const MAX_FILE = 20 * 1024 * 1024
 
 const fmtTime = (ts) => (ts ? new Date(ts).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—')
-
-function resourceLink(r) {
-  const res = r?.resource || {}
-  // educationLinkResource → link, educationFileResource/Media → fileUrl/webUrl
-  return res.link || res.webUrl || res.fileUrl || null
-}
-
-function resourceIcon(r) {
-  const t = String(r?.resource?.['@odata.type'] || '')
-  if (t.includes('Link')) return 'link'
-  if (t.includes('Word')) return 'description'
-  if (t.includes('Excel')) return 'table_chart'
-  if (t.includes('PowerPoint')) return 'co_present'
-  if (t.includes('Pdf')) return 'picture_as_pdf'
-  if (t.includes('Media')) return 'play_circle'
-  if (t.includes('File')) return 'draft'
-  return 'attach_file'
-}
-
-const hostnameOf = (url) => {
-  try {
-    return new URL(url).hostname.replace(/^www\./, '')
-  } catch {
-    return ''
-  }
-}
 
 /** Modal popup (desktop): full assignment detail — instructions, resources, grade + feedback. */
 export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, onClose }) {
@@ -42,7 +20,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
   }, [open, onClose])
 
   const d = detail?.raw || null
-  const instructionsHtml = useMemo(() => sanitizeHtml(d?.instructions?.content || ''), [d])
+  const instructionsHtml = d?.instructions?.content || ''
   const resources = useMemo(() => (Array.isArray(d?.resources) ? d.resources : []), [d])
   const webUrl = d?.webUrl || vm?.webUrl || cls?.webUrl || 'https://teams.microsoft.com'
 
@@ -76,9 +54,10 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
     let alive = true
     setTitles({})
     for (const r of resources) {
-      const href = resourceLink(r)
+      const info = describeResource(r)
+      const href = info.url
       // Graph drive URLs require an auth header; their displayName is the useful label.
-      if (!href || !source?.title || /^https:\/\/graph\.microsoft\.com\//i.test(href)) continue
+      if (!href || !source?.title || info.isFile || info.isImage || isGraphUrl(href)) continue
       source.title(href).then((res) => {
         if (alive && res?.ok && res.title) setTitles((cur) => (cur[href] ? cur : { ...cur, [href]: res.title }))
       })
@@ -98,6 +77,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
   const [workBusy, setWorkBusy] = useState('')
   const [workMsg, setWorkMsg] = useState('')
   const [workErr, setWorkErr] = useState('')
+  const [resourceErr, setResourceErr] = useState('')
   const [linkOpen, setLinkOpen] = useState(false)
   const [linkUrl, setLinkUrl] = useState('')
   const [linkName, setLinkName] = useState('')
@@ -211,26 +191,17 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
     }
   }
 
-  const openWorkFile = async (fileUrl) => {
-    if (!fileUrl) return
-    setWorkErr('')
-    const res = await source.submission?.({ op: 'openFile', classId: vm.classId, assignmentId: vm.id, submissionId: subId, fileUrl })
-    if (!res?.ok) setWorkErr(res?.error || 'Could not open that file — open it in Teams instead.')
-    else if (res?.url) window.open(res.url, '_blank', 'noreferrer')
+  const openResource = async (url) => {
+    if (!url) return
+    setResourceErr('')
+    try {
+      const res = await source.resource?.({ op: 'open', url })
+      if (!res?.ok) setResourceErr(res?.error || 'Could not open this resource.')
+      else if (res.url) window.open(res.url, '_blank', 'noopener,noreferrer')
+    } catch {
+      setResourceErr('Could not open this resource. Try refreshing Assignments+.')
+    }
   }
-
-  const workName = (r) =>
-    r.link ? (
-      <a className="ellipsis" href={r.link} target="_blank" rel="noreferrer">
-        {r.displayName}
-      </a>
-    ) : r.fileUrl ? (
-      <button type="button" className="workname" onClick={() => openWorkFile(r.fileUrl)}>
-        {r.displayName}
-      </button>
-    ) : (
-      <span className="ellipsis">{r.displayName}</span>
-    )
 
   if (!vm) return null
 
@@ -243,7 +214,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
   const isTodo = vm.state.progress === 'todo'
   // the status banner already shows due info except for these states
   const bannerShowsDue = !isExcused && !isReassigned && !isSubmitted
-  const className = cls?.name || vm.className || 'Class'
+  const className = bestClassName(cls?.name, vm.className, assignmentClassName(d)) || 'Unknown class'
   // turn in: any unsubmitted work; undo: only plain "submitted" (not graded/returned/returned-for-changes)
   const canTurnIn = !!(sub?.id && (isTodo || isReassigned))
   const canUnsubmit = !!(sub?.id && isSubmitted)
@@ -328,7 +299,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
                       </div>
                     ) : null}
                     {sub.feedback ? (
-                      <div className="prose" style={{ marginTop: 10 }} dangerouslySetInnerHTML={{ __html: sanitizeHtml(sub.feedback) }} />
+                      <RichText html={sub.feedback} source={source} onOpenResource={openResource} style={{ marginTop: 10 }} />
                     ) : null}
                   </div>
                 ) : null}
@@ -364,7 +335,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
                 {instructionsHtml ? (
                   <>
                     <div className="sectheader">Instructions</div>
-                    <div className="prose" dangerouslySetInnerHTML={{ __html: instructionsHtml }} />
+                    <RichText html={instructionsHtml} source={source} onOpenResource={openResource} />
                   </>
                 ) : null}
 
@@ -373,34 +344,9 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
                   <>
                     <div className="sectheader">Resources</div>
                     <div className="listmini">
-                      {resources.map((r) => {
-                        const href = resourceLink(r)
-                        const res = r?.resource || {}
-                        const isFile = !res.link && !res.webUrl && !!res.fileUrl
-                        const fallback = r?.displayName && r.displayName !== 'Resource' ? r.displayName : hostnameOf(href) || r?.displayName || 'Resource'
-                        const name = (href && titles[href]) || fallback
-                        if (isFile) {
-                          return (
-                            <button key={r.id || name} type="button" className="reslink" onClick={() => openWorkFile(res.fileUrl)}>
-                              <Icon name={resourceIcon(r)} size={20} />
-                              <span className="ellipsis">{name}</span>
-                              <Icon name="open_in_new" size={16} style={{ opacity: 0.6 }} />
-                            </button>
-                          )
-                        }
-                        return href ? (
-                          <a key={r.id || name} href={href} target="_blank" rel="noreferrer">
-                            <Icon name={resourceIcon(r)} size={20} />
-                            <span className="ellipsis">{name}</span>
-                            <Icon name="open_in_new" size={16} style={{ opacity: 0.6 }} />
-                          </a>
-                        ) : (
-                          <a key={r.id || name} href={webUrl} target="_blank" rel="noreferrer">
-                            <Icon name={resourceIcon(r)} size={20} />
-                            <span className="ellipsis">{name}</span>
-                          </a>
-                        )
-                      })}
+                      {resources.map((r, index) => (
+                        <ResourceItem key={r.id || index} resource={r} source={source} onOpen={openResource} fallbackUrl={webUrl} title={titles[describeResource(r).url]} />
+                      ))}
                     </div>
                   </>
                 ) : null}
@@ -412,9 +358,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
                     {work.resources.length ? (
                       <div className="listmini">
                         {work.resources.map((r) => (
-                          <div key={r.id} className="workrow">
-                            <Icon name={resourceIcon({ resource: { '@odata.type': r.type } })} size={20} />
-                            {workName(r)}
+                          <ResourceItem key={r.id} resource={r} source={source} onOpen={openResource} fallbackUrl={webUrl}>
                             {r.studentAdded ? (
                               <button
                                 type="button"
@@ -427,7 +371,7 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
                                 <Icon name={workBusy === r.id ? 'sync' : 'close'} size={18} cls={workBusy === r.id ? 'spin' : ''} />
                               </button>
                             ) : null}
-                          </div>
+                          </ResourceItem>
                         ))}
                       </div>
                     ) : (
@@ -504,15 +448,18 @@ export default function DetailSheet({ open, vm, cls, detail, source, onTurnIn, o
                     <div className="sectheader">Submitted work</div>
                     <div className="listmini">
                       {(work.submittedResources.length ? work.submittedResources : work.resources).map((r) => (
-                        <div key={r.id} className="workrow">
-                          <Icon name={resourceIcon({ resource: { '@odata.type': r.type } })} size={20} />
-                          {workName(r)}
-                        </div>
+                        <ResourceItem key={r.id} resource={r} source={source} onOpen={openResource} fallbackUrl={webUrl} />
                       ))}
                     </div>
                   </>
                 ) : null}
 
+                {resourceErr ? (
+                  <div className="stateinfo late" role="alert">
+                    <Icon name="error" size={18} />
+                    <span>{resourceErr}</span>
+                  </div>
+                ) : null}
                 <div className="gap-h" />
                 <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
                   {canTurnIn ? (

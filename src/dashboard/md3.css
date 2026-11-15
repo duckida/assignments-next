@@ -323,32 +323,39 @@ a { color: var(--sys-primary); }
 .gradeblock .maxof { color: color-mix(in srgb, var(--sys-on-primary-container) 75%, transparent); font-size: 13px; margin-left: 8px; }
 .gap-h { height: 12px; }
 .listmini { display: flex; flex-direction: column; gap: 2px; margin: 8px -8px; }
-.listmini > a,
-.listmini > button.reslink {
+.reslink {
   display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: var(--r-s);
   color: var(--sys-on-surface); text-decoration: none; font-size: 14px;
-  background: none; border: 0; width: 100%; text-align: left; cursor: pointer;
+  background: none; border: 0; width: 100%; text-align: left; cursor: pointer; font-family: inherit;
 }
-.listmini > a:hover,
-.listmini > button.reslink:hover { background: color-mix(in srgb, var(--sys-on-surface) 8%, transparent); }
-.listmini > a .icon,
-.listmini > button.reslink .icon { color: var(--sys-secondary); flex: none; }
-.listmini > a .ellipsis,
-.listmini > button.reslink .ellipsis { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reslink:hover { background: color-mix(in srgb, var(--sys-on-surface) 8%, transparent); }
+.reslink.static { cursor: default; }
+.reslink.static:hover { background: none; }
+.reslink .msym { color: var(--sys-secondary); flex: none; }
+.reslink .ellipsis { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.resource-row { display: flex; align-items: center; gap: 4px; }
+.resource-row .reslink { flex: 1; min-width: 0; }
+.resource-row .workdel { width: 32px; height: 32px; flex: none; }
+.resource-image { display: block; max-width: calc(100% - 24px); max-height: 60vh; object-fit: contain; height: auto; margin: 4px 12px 12px; border-radius: var(--r-s); }
+.image-placeholder { display: inline-block; padding: 8px 12px; color: var(--sys-on-surface-var); font-size: 13px; }
 .prose { font-size: 14px; line-height: 21px; color: var(--sys-on-surface-var); }
 .prose p { margin: 0 0 8px; }
 .prose ol, .prose ul { margin: 4px 0 8px 20px; padding: 0; }
 .prose a { color: var(--sys-primary); text-decoration: underline; }
+.prose .prose-link { color: var(--sys-primary); text-decoration: underline; border: 0; background: none; padding: 0; font: inherit; text-align: inherit; cursor: pointer; }
 .prose h1, .prose h2, .prose h3 { font-size: 15px; margin: 10px 0 6px; color: var(--sys-on-surface); }
 .prose img {
   display: block;
   max-width: 100%;
+  max-height: 70vh;
+  object-fit: contain;
   height: auto;
   margin: 8px 0;
   border-radius: var(--r-s);
   background: color-mix(in srgb, var(--sys-on-surface) 6%, transparent);
 }
 .prose a img { display: inline-block; }
+.prose figure { margin: 8px 0; }
 
 /* ---------- submission work (attachments) ---------- */
 .workrow { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: var(--r-s); }

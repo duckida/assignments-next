@@ -10,14 +10,19 @@
  * show exactly what the page emitted.
  */
 import { MSG } from '../shared/protocol.js'
+import { tokenSummary } from '../shared/jwt.js'
+import { assignmentClassName, bestClassName, classKey } from '../shared/classes.js'
+import { isGraphUrl, resourceUrl } from '../shared/resources.js'
 import { GraphError, graphBatch, graphFetch, graphPaged } from './graph.js'
+import { resolveClasses, sameAccount } from './classes.js'
+import { graphResource, imageData } from './resources.js'
 
 const CANDIDATES_KEY = 'mad3.session.tokens.v2'
 const SEEN_KEY = 'mad3.session.seen.v1'
 const CACHE_KEY = 'mad3.cache.v2' // v2: rows now carry className; v1 lacked it
 const SNAPSHOT_KEY = 'mad3.snapshot.v1'
-const LEGACY_LOCAL_KEYS = ['mad3.cache.v1']
-const DETAILS_KEY = 'mad3.details.v2' // per-assignment detail cache (fast re-open)
+const LEGACY_LOCAL_KEYS = ['mad3.cache.v1', 'mad3.details.v2']
+const DETAILS_KEY = 'mad3.details.v3' // v3: retain resource types/URLs in the EDU fallback
 const DETAIL_TTL = 15 * 60_000
 const DETAILS_CAP = 80
 const VISIBLE = new Set(['assigned', 'published', 'inactive', 'unknownfuturevalue'])
@@ -41,7 +46,7 @@ const MATCH_URLS = [
 ]
 
 const isGraphAud = (aud) =>
-  aud === '00000003-0000-0000-c000-000000000000' || /graph\.microsoft\.(com|us)/i.test(String(aud))
+  aud === '00000003-0000-0000-c000-000000000000' || /^https:\/\/(?:edu\.)?graph\.microsoft\.(?:com|us)\/?$/i.test(String(aud))
 const isEduAud = (aud) => /edu\.microsoft\.com/i.test(String(aud))
 
 /* ---------------- lifecycle: inject into already-open tabs ---------------- */
@@ -87,14 +92,35 @@ function openDashboard() {
 
 /* ---------------- captured token store ---------------- */
 
-async function saveToken(p) {
+let tokenSave = Promise.resolve()
+
+function saveToken(p) {
+  // Teams often emits files, roster and assignment tokens at the same time.
+  // Serialize read/modify/write so a later capture cannot overwrite another scope.
+  const saved = tokenSave.then(() => storeToken(p))
+  tokenSave = saved.catch(() => {})
+  return saved
+}
+
+async function storeToken(p) {
   if (!p?.token || !p.aud) return
+  const claims = tokenSummary(p.token) || p
+  const scopes = claims.scp || p.scp || ''
   const store = await chrome.storage.session.get(CANDIDATES_KEY)
-  const list = (store?.[CANDIDATES_KEY] || []).filter((c) => !(c.aud === p.aud && c.expMs === p.expMs))
-  list.unshift({ token: p.token, aud: p.aud, scp: p.scp || '', upn: p.upn || '', host: p.host || '', expMs: p.expMs || 0, capturedAt: p.capturedAt || Date.now() })
+  const previous = (store?.[CANDIDATES_KEY] || []).find((c) => c.token === p.token)
+  const origins = new Set(previous?.requestOrigins || [])
+  const requestUrl = resourceUrl(p.requestOrigin)
+  if (requestUrl) origins.add(new URL(requestUrl).origin)
+  const list = (store?.[CANDIDATES_KEY] || []).filter((c) => c.token !== p.token && (!c.expMs || c.expMs > Date.now()))
+  list.unshift({
+    token: p.token, aud: claims.aud || p.aud, scp: Array.isArray(scopes) ? scopes.join(' ') : scopes,
+    tid: claims.tid || '', oid: claims.oid || '', upn: claims.upn || '',
+    host: p.host || '', requestOrigins: [...origins].slice(0, 10),
+    expMs: claims.expMs || p.expMs || 0, capturedAt: Date.now(),
+  })
   // graph-audience first, then newest expiry
   list.sort((a, b) => (isGraphAud(b.aud) ? 1 : 0) - (isGraphAud(a.aud) ? 1 : 0) || (b.expMs || 0) - (a.expMs || 0))
-  await chrome.storage.session.set({ [CANDIDATES_KEY]: list.slice(0, 10) })
+  await chrome.storage.session.set({ [CANDIDATES_KEY]: list.slice(0, 20) })
   // aud-only diagnostics (no tokens)
   const seenStore = await chrome.storage.session.get(SEEN_KEY)
   const seen = seenStore?.[SEEN_KEY] || []
@@ -115,7 +141,7 @@ function makePicks(candidates) {
   const picks = []
   const add = (strategy, c) => {
     if (!c) return
-    const key = `${strategy}|${c.aud}|${c.expMs}|${c.token.length}`
+    const key = `${strategy}|${c.token}`
     if (!picks.some((p) => p.key === key)) picks.push({ key, token: c.token, strategy, meta: c })
   }
 
@@ -301,58 +327,32 @@ async function openTeams() {
 
 /* ---------------- graph strategy ---------------- */
 
-async function getClasses(token) {
-  // Both roster reads are independent — run them together and prefer education classes.
-  const [classesRes, teamsRes] = await Promise.allSettled([
-    graphPaged(token, '/education/me/classes?$select=id,displayName,description&$top=100', {}),
-    graphPaged(token, '/me/joinedTeams?$select=id,displayName,description,webUrl&$top=200', {}),
-  ])
-  const classes = classesRes.status === 'fulfilled' ? classesRes.value : []
-  if (classes.length) return classes.map((c) => ({ id: c.id, name: c.displayName || 'Class', description: c.description, webUrl: null }))
-  const teams = teamsRes.status === 'fulfilled' ? teamsRes.value : []
-  if (teams.length) return teams.map((t) => ({ id: t.id, name: t.displayName || 'Team', description: t.description, webUrl: t.webUrl || null }))
-  return null
-}
-
-async function graphSync(pick, meta) {
+async function graphSync(pick, meta, candidates) {
   const token = pick.token
-  // Roster + assignment list are independent reads: fetch them at the same time.
-  let classes, rawAssignments
+  let rawAssignments
   try {
-    ;[classes, rawAssignments] = await Promise.all([
-      getClasses(token).catch(() => null),
-      graphPaged(token, '/education/me/assignments?$top=200', { version: 'v1.0' }),
-    ])
+    rawAssignments = await graphPaged(token, '/education/me/assignments?$top=200', { version: 'v1.0' })
   } catch (e) {
     return graphFail(e, meta)
   }
-  classes = (classes || []).slice()
   const assignments = rawAssignments.filter((a) => VISIBLE.has(String(a.status || '').toLowerCase()))
-  const classNames = new Map(classes.map((c) => [c.id, c.name]))
-
-  // The v1.0 assignment payload carries no class display name, and the roster call
-  // can come back empty (EduRoster scope missing) or use ids that differ from the
-  // classIds on assignments. Resolve any missing names directly, one batch call.
-  const missing = [...new Set(assignments.map((a) => a.classId).filter((cid) => !classNames.get(cid)))]
-  if (missing.length) {
-    const lookups = await safeBatch(token, missing.map((cid) => `/education/classes/${cid}?$select=id,displayName,description`))
-    for (const body of lookups.values()) {
-      if (!body?.id || !body.displayName || classNames.has(body.id)) continue
-      classNames.set(body.id, body.displayName)
-      classes.push({ id: body.id, name: body.displayName, description: body.description || '', webUrl: null })
-    }
-  }
-
-  const named = assignments.map((a) => ({ ...a, className: classNames.get(a.classId) || a.classDisplayName || null }))
-  const subPaths = named.map((a) => `/education/classes/${a.classId}/assignments/${a.id}/submissions?$expand=outcomes`)
-  const subs = await safeBatch(token, subPaths)
+  const cached = (await chrome.storage.local.get(CACHE_KEY))?.[CACHE_KEY]
+  const names = cached && sameAccount(cached.account || {}, pick.meta) ? cached.classes || [] : []
+  const rosterTokens = candidates.filter((c) => isGraphAud(c.aud) && sameAccount(c, pick.meta))
+  const subPaths = assignments.map((a) => `/education/classes/${a.classId}/assignments/${a.id}/submissions?$expand=outcomes`)
+  const [classes, subs] = await Promise.all([
+    resolveClasses(assignments, rosterTokens, names),
+    safeBatch(token, subPaths),
+  ])
+  const classNames = new Map(classes.map((c) => [classKey(c.id), c.name]))
+  const named = assignments.map((a) => ({ ...a, className: bestClassName(classNames.get(classKey(a.classId)), assignmentClassName(a)) }))
   const submissions = {}
   for (const [path, body] of subs) {
-    const m = /\/assignments\/([a-z0-9-]+)\/submissions/i.exec(path)
+    const m = /\/assignments\/([^/]+)\/submissions/i.exec(path)
     const val = body?.value
     if (m && Array.isArray(val) && val.length) submissions[m[1]] = val[0]
   }
-  return { ok: true, data: { classes, assignments: named, submissions, ts: Date.now() }, meta: { ...meta, strategy: 'graph' } }
+  return { ok: true, data: { classes, assignments: named, submissions, ts: Date.now() }, meta: { ...meta, strategy: 'graph', unnamedClasses: classes.filter((c) => !c.name).length } }
 }
 
 async function safeBatch(token, paths) {
@@ -426,6 +426,7 @@ function eduMapAssignment(a, teamId) {
   return {
     id,
     classId: teamId,
+    className: assignmentClassName(a),
     displayName: a.displayName || a.name || a.title || 'Assignment',
     dueDateTime: a.dueDateTime || a.dueDate || null,
     closeDateTime: a.closeDateTime || a.closeDate || null,
@@ -452,6 +453,7 @@ function eduMapSubmission(s, assignmentId) {
     status: s.status || 'working',
     submittedDateTime: s.submittedDateTime || null,
     returnedDateTime: s.returnedDateTime || null,
+    excusedDateTime: s.excusedDateTime || null,
     outcomes,
   }
 }
@@ -465,7 +467,7 @@ async function pool(items, size, fn) {
   )
 }
 
-async function eduSync(pick, meta) {
+async function eduSync(pick, meta, candidates) {
   const token = pick.token
   let teamsBody
   try {
@@ -474,7 +476,7 @@ async function eduSync(pick, meta) {
     return graphFail(e, { ...meta, hint: 'edu.microsoft.com rejected the captured token. Reload the Teams tab and retry.' })
   }
   const teams = arrOf(teamsBody)
-    .map((t) => ({ id: t.id || t.teamId, name: t.displayName || t.name || 'Class', description: t.description || '', webUrl: t.webUrl || null }))
+    .map((t) => ({ id: t.id || t.teamId || t.groupId, name: bestClassName(t.displayName, t.name, t.team?.displayName, t.class?.displayName), description: t.description || '', webUrl: t.webUrl || null }))
     .filter((t) => t.id)
 
   const assignments = []
@@ -485,7 +487,7 @@ async function eduSync(pick, meta) {
       for (const a of arrOf(body)) {
         const raw = eduMapAssignment(a, t.id)
         if (!raw) continue
-        raw.className = t.name
+        raw.className = bestClassName(t.name, raw.className)
         assignments.push(raw)
         try {
           const sBody = await eduGet(token, `/teams/${t.id}/assignments/${raw.id}/submissions/me`)
@@ -500,7 +502,69 @@ async function eduSync(pick, meta) {
       /* team may be inaccessible */
     }
   })
-  return { ok: true, data: { classes: teams, assignments, submissions, ts: Date.now() }, meta: { ...meta, strategy: 'edu' } }
+  const classes = await resolveClasses(assignments, candidates.filter((c) => isGraphAud(c.aud) && sameAccount(c, pick.meta)), teams)
+  const classNames = new Map(classes.map((c) => [classKey(c.id), c.name]))
+  const named = assignments.map((a) => ({ ...a, className: bestClassName(classNames.get(classKey(a.classId)), a.className) }))
+  return { ok: true, data: { classes, assignments: named, submissions, ts: Date.now() }, meta: { ...meta, strategy: 'edu' } }
+}
+
+/* ---------------- resource links and inline images ---------------- */
+
+async function doResource({ op = 'open', url: value } = {}) {
+  const url = resourceUrl(value)
+  if (!url || !['open', 'preview', 'image'].includes(op)) return { ok: false, error: 'Unsupported resource link.' }
+  if (!isGraphUrl(url) && op === 'open') {
+    await chrome.tabs.create({ url, active: true })
+    return { ok: true }
+  }
+
+  const { candidates } = await getCandidates()
+  const cached = (await chrome.storage.local.get(CACHE_KEY))?.[CACHE_KEY]
+  const tokens = candidates.filter((c) => sameAccount(c, cached?.account || {}))
+  let failure
+  if (isGraphUrl(url)) {
+    const graphTokens = tokens.filter((c) => isGraphAud(c.aud))
+      .sort((a, b) => Number(/Files\.|Sites\./i.test(b.scp || '')) - Number(/Files\.|Sites\./i.test(a.scp || '')))
+    for (const c of graphTokens) {
+      try {
+        const result = await graphResource(c.token, url, op)
+        if (op === 'open') {
+          await chrome.tabs.create({ url: result.url, active: true })
+          return { ok: true }
+        }
+        return result
+      } catch (e) {
+        failure = e
+      }
+    }
+    return {
+      ok: false,
+      error: failure?.status === 403
+        ? 'This session cannot read the file. Open it once in Teams, then retry here.'
+        : failure?.message || 'No Graph file session is available. Refresh Assignments+ and try again.',
+    }
+  }
+
+  // Teams/SharePoint instruction images may require their own audience token.
+  // Only reuse a non-Graph token on its audience or an origin where Teams sent it.
+  const origin = new URL(url).origin
+  const imageTokens = tokens.filter((c) => {
+    if (isGraphAud(c.aud) || !url.startsWith('https://')) return false
+    const audience = resourceUrl(c.aud)
+    return (audience && new URL(audience).origin === origin) || c.requestOrigins?.includes(origin)
+  })
+  for (const c of imageTokens) {
+    try {
+      return { ok: true, isImage: true, dataUrl: await imageData(url, { token: c.token }) }
+    } catch (e) {
+      failure = e
+    }
+  }
+  try {
+    return { ok: true, isImage: true, dataUrl: await imageData(url, { credentials: 'include' }) }
+  } catch (e) {
+    return { ok: false, error: e.message || failure?.message || 'Could not load this image.' }
+  }
 }
 
 /* ---------------- link titles ---------------- */
@@ -601,10 +665,11 @@ async function runPicks({ candidates, seen }) {
       expMs: pick.meta.expMs,
       scp: pick.meta.scp,
       upn: pick.meta.upn,
+      account: { tid: pick.meta.tid || '', oid: pick.meta.oid || '', upn: pick.meta.upn || '' },
       seen: seen.map((s) => s.aud),
       attempt: attemptLabel(pick),
     }
-    const res = pick.strategy === 'graph' ? await graphSync(pick, meta) : await eduSync(pick, meta)
+    const res = pick.strategy === 'graph' ? await graphSync(pick, meta, candidates) : await eduSync(pick, meta, candidates)
     if (res?.ok) {
       // Treat zero assignments as a successful API read; some users may genuinely have none.
       return { ...res, meta: { ...(res.meta || {}), attempts: [...attempts, { strategy: pick.strategy, aud: pick.meta.aud, status: 200, code: 'ok' }] } }
@@ -645,7 +710,7 @@ function sharedSync(opts = {}) {
     syncInFlight = doSync(opts)
       .then(async (res) => {
         if (res?.ok) {
-          const cache = { ts: res.data.ts, classes: res.data.classes, assignments: res.data.assignments, submissions: res.data.submissions }
+          const cache = { ts: res.data.ts, account: res.meta?.account, classes: res.data.classes, assignments: res.data.assignments, submissions: res.data.submissions }
           await chrome.storage.local.set({ [CACHE_KEY]: cache }).catch(() => {})
         }
         return res
@@ -686,9 +751,13 @@ async function doDetail({ classId, id }) {
       }
       const a = await eduGet(pick.token, `/teams/${classId}/assignments/${id}`)
       const raw = eduMapAssignment(a, classId) || { id, classId }
-      raw.instructions = { content: a?.instructions || a?.description || '' }
+      raw.instructions = typeof a?.instructions === 'object' ? a.instructions : { content: a?.instructions || a?.description || '' }
       raw.resources = Array.isArray(a?.resources)
-        ? a.resources.map((r) => ({ id: r.id || r.name, displayName: r.displayName || r.name || 'Resource', resource: { link: r.webUrl || r.link || null } }))
+        ? a.resources.map((r) => ({
+            ...r,
+            id: r.id || r.name,
+            resource: r.resource || { ...r, displayName: r.displayName || r.name || 'Resource' },
+          }))
         : []
       writeDetailCache(map, key, raw, 'edu').catch(() => {})
       return { ok: true, assignment: raw, meta }
@@ -764,7 +833,9 @@ function mapResourceList(json) {
     displayName: r.resource?.displayName || 'Resource',
     type: String(r.resource?.['@odata.type'] || ''),
     link: r.resource?.link || null,
+    webUrl: r.resource?.webUrl || null,
     fileUrl: r.resource?.fileUrl || null,
+    mimeType: r.resource?.mimeType || null,
     studentAdded: !r.assignmentResourceUrl,
     createdTs: r.resource?.createdDateTime ? Date.parse(r.resource.createdDateTime) : null,
   }))
@@ -842,6 +913,8 @@ async function addFileResource(token, base, sid, payload) {
 
 async function doSubmission(payload) {
   const { op = 'list', classId, assignmentId } = payload
+  // Keep older dashboard tabs working; file opening no longer needs a submission.
+  if (op === 'openFile') return doResource({ op: 'open', url: payload.fileUrl })
   if (!classId || !assignmentId) return { ok: false, error: 'Missing assignment reference.' }
   const { candidates, seen } = await getCandidates()
   const picks = makePicks(candidates).filter((p) => p.strategy === 'graph')
@@ -854,24 +927,6 @@ async function doSubmission(payload) {
   for (const pick of picks) {
     const meta = { upn: pick.meta.upn, strategy: 'graph', seen: seen.map((s) => s.aud), attempt: attemptLabel(pick) }
     try {
-      // Opening a file doesn't need a submission (teacher resources have none yet).
-      if (op === 'openFile') {
-        // Submission/assignment file resources point at Graph's drive API, which a
-        // browser tab can't open without an auth header. Resolve the SharePoint webUrl.
-        const fileUrl = String(payload.fileUrl || '')
-        if (/^https:\/\/graph\.microsoft\.com\/v1\.0\/drives\//i.test(fileUrl)) {
-          const item = await graphFetch(pick.token, `${fileUrl}?$select=webUrl,name`)
-          if (!item?.webUrl) return { ok: false, error: 'This file has no web link — open it in Teams instead.' }
-          await chrome.tabs.create({ url: item.webUrl })
-          return { ok: true }
-        }
-        if (/^https?:\/\//i.test(fileUrl)) {
-          await chrome.tabs.create({ url: fileUrl })
-          return { ok: true }
-        }
-        return { ok: false, error: 'Unsupported file link.' }
-      }
-
       const sid = await submissionIdFor(pick.token, classId, assignmentId, payload.submissionId)
       if (!sid) throw new GraphError('no-submission', 404, 'No submission exists for this assignment yet.')
 
@@ -993,6 +1048,12 @@ chrome.runtime.onMessage.addListener((req, sender, respond) => {
     doSubmission(req.payload || {})
       .then((res) => respond?.(res))
       .catch(() => respond?.({ ok: false, error: 'Couldn’t update your work.' }))
+    return true
+  }
+  if (type === MSG.RESOURCE) {
+    doResource(req.payload || {})
+      .then((res) => respond?.(res))
+      .catch(() => respond?.({ ok: false, error: 'Could not load this resource. Try refreshing Assignments+.' }))
     return true
   }
   if (type === MSG.TITLE) {

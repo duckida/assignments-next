@@ -12,6 +12,7 @@ export const MSG = {
   OPEN_TEAMS: 'mad3/open-teams',  // {} -> { ok, url }  open/activate the learned Assignments URL
   SYNC: 'mad3/sync',              // { auto? } -> { ok, code?, data?, meta? }
   DETAIL: 'mad3/detail',          // { classId, id } -> { ok, code?, assignment? }
+  RESOURCE: 'mad3/resource',      // { op: 'open'|'preview'|'image', url } -> { ok, name?, dataUrl?, error? }
   SUBMIT: 'mad3/submit',          // { classId, id, submissionId?, action: 'submit'|'unsubmit' } -> { ok, error? }
   SUBMISSION: 'mad3/submission',  // { op: 'list'|'addLink'|'addFile'|'remove'|'openFile', classId, assignmentId, ... }
   TITLE: 'mad3/title',            // { url } -> { ok, title? }  (fetch link's HTML <title>)

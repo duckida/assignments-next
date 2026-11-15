@@ -6,7 +6,8 @@ import DetailSheet from './components/DetailSheet.jsx'
 import SettingsSheet from './components/SettingsSheet.jsx'
 import { Section, SkeletonList, StateAction } from './components/States.jsx'
 import { createSource } from './data-source.js'
-import { dueBucket, mapAssignment, mapSubmission, progress, sortAssignments } from '../shared/normalize.js'
+import { dueBucket, mapAssignment, mapSubmission, progress, sortAssignments, sortCompletedAssignments } from '../shared/normalize.js'
+import { bestClassName, classKey, mergeAssignmentClasses } from '../shared/classes.js'
 
 const THEME_KEY = 'mad3.theme'
 const QS = new URLSearchParams(location.search)
@@ -99,21 +100,9 @@ export default function App() {
   }, [source, refresh])
 
   /* ---------- view model ---------- */
-  const classes = useMemo(() => {
-    const list = (data?.classes || []).map((c) => ({ id: c.id, name: c.name || c.displayName || 'Class', description: c.description || '', webUrl: c.webUrl || null }))
-    // Fill gaps from per-assignment class names (roster reads can be empty or use
-    // different ids); keeps filter chips and avatars working when data.classes misses.
-    const known = new Set(list.map((c) => c.id))
-    for (const a of data?.assignments || []) {
-      if (a.classId && a.className && !known.has(a.classId)) {
-        known.add(a.classId)
-        list.push({ id: a.classId, name: a.className, description: '', webUrl: null })
-      }
-    }
-    return list
-  }, [data])
+  const classes = useMemo(() => mergeAssignmentClasses(data?.classes, data?.assignments), [data])
 
-  const classMap = useMemo(() => new Map(classes.map((c) => [c.id, c])), [classes])
+  const classMap = useMemo(() => new Map(classes.map((c) => [classKey(c.id), c])), [classes])
 
   const rows = useMemo(() => {
     const now = Date.now()
@@ -127,7 +116,7 @@ export default function App() {
       list.push(vm)
     }
     let filtered = list
-    if (classFilter) filtered = filtered.filter((a) => a.classId === classFilter)
+    if (classFilter) filtered = filtered.filter((a) => classKey(a.classId) === classKey(classFilter))
     filtered = filtered.filter((a) => {
       const p = a.state.progress
       const todoish = p === 'todo' || p === 'reassigned'
@@ -135,7 +124,7 @@ export default function App() {
       if (mode === 'overdue') return todoish && a.state.bucket === 'overdue'
       return todoish && a.state.bucket !== 'overdue' // upcoming
     })
-    return sortAssignments(filtered, now)
+    return mode === 'done' ? sortCompletedAssignments(filtered) : sortAssignments(filtered, now)
   }, [data, mode, classFilter])
 
   const sections = useMemo(() => {
@@ -157,7 +146,10 @@ export default function App() {
 
   // class lookup with per-assignment name fallback (classes list can be empty
   // when the token lacks EduRoster scopes)
-  const clsFor = useCallback((a) => classMap.get(a.classId) || (a.className ? { id: a.classId, name: a.className } : undefined), [classMap])
+  const clsFor = useCallback((a) => {
+    const cls = classMap.get(classKey(a.classId))
+    return { ...cls, id: a.classId, name: bestClassName(cls?.name, a.className) }
+  }, [classMap])
 
   /* ---------- detail ---------- */
   const openDetail = useCallback(
@@ -180,7 +172,7 @@ export default function App() {
       // update the open sheet immediately…
       setDetail((cur) => {
         if (!cur || cur.vm.id !== vm.id) return cur
-        const nv = { ...cur.vm, submission: { ...(cur.vm.submission || {}), status, submittedDateTime } }
+        const nv = { ...cur.vm, submission: { ...(cur.vm.submission || {}), status, submittedTs: submittedDateTime ? Date.parse(submittedDateTime) : null } }
         nv.state = { bucket: dueBucket(nv), progress: progress(nv) }
         return { ...cur, vm: nv }
       })
@@ -282,11 +274,11 @@ export default function App() {
                 {classes.map((c) => (
                   <FilterChip
                     key={c.id}
-                    selected={classFilter === c.id}
-                    onClick={() => setClassFilter(classFilter === c.id ? null : c.id)}
+                    selected={!!classFilter && classKey(classFilter) === classKey(c.id)}
+                    onClick={() => setClassFilter(classFilter && classKey(classFilter) === classKey(c.id) ? null : c.id)}
                     leading={<ClassAvatar cls={c} small />}
                   >
-                    {c.name}
+                    {c.name || 'Unknown class'}
                   </FilterChip>
                 ))}
               </div>
@@ -389,9 +381,10 @@ export default function App() {
       )}
 
       <DetailSheet
+        key={detail ? `${detail.vm.classId}|${detail.vm.id}` : 'closed'}
         open={!!detail}
         vm={detail?.vm}
-        cls={detail?.cls}
+        cls={detail ? clsFor(detail.vm) : null}
         detail={detail ? { phase: detail.phase, raw: detail.raw } : null}
         source={source}
         onTurnIn={turnIn}

@@ -35,13 +35,17 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
 
   // Capture EVERY bearer token seen on this page (any audience) — the service
   // worker decides which audience is usable (Graph vs edu-internal vs Teams).
-  function considerToken(token) {
+  function considerToken(token, requestUrl) {
     if (!token || typeof token !== 'string' || token.length < 20) return
     const p = decodeJwtPayload(token)
     if (!p || !p.aud) return
     const expMs = p.exp ? p.exp * 1000 : 0
     if (expMs && expMs < Date.now()) return
-    const key = `${p.aud}|${expMs}|${token.length}`
+    let requestOrigin = ''
+    try {
+      requestOrigin = new URL(requestUrl, window.location.href).origin
+    } catch {}
+    const key = `${token}|${requestOrigin}`
     if (seenTokens.has(key)) return
     seenTokens.add(key)
     const s = tokenSummary(token) || {}
@@ -52,6 +56,7 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
       scp: s.scp || '',
       upn: s.upn || '',
       host: window.location.host,
+      requestOrigin,
       capturedAt: Date.now(),
     })
   }
@@ -112,6 +117,8 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
         let auth = ''
         if (typeof input === 'string') {
           url = input
+        } else if (input instanceof URL) {
+          url = input.href
         } else if (input && typeof input === 'object' && 'url' in input) {
           url = String(input.url)
           try {
@@ -120,7 +127,7 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
         }
         if (!auth && init?.headers) auth = headerGet(init.headers, 'authorization') ?? ''
         if (auth && /^bearer\s+/i.test(auth) && !createsTokenLeakRisk(url)) {
-          considerToken(auth.replace(/^bearer\s+/i, '').trim())
+          considerToken(auth.replace(/^bearer\s+/i, '').trim(), url)
         }
         const resP = origFetch.apply(this, arguments)
         try {
@@ -165,7 +172,7 @@ import { WINDOW_MARKER, WT } from '../shared/protocol.js'
   XMLHttpRequest.prototype.send = function (body) {
     const self = this
     if (this.__mad3Auth && /^bearer\s+/i.test(this.__mad3Auth) && !createsTokenLeakRisk(this.__mad3Url)) {
-      considerToken(this.__mad3Auth.replace(/^bearer\s+/i, '').trim())
+      considerToken(this.__mad3Auth.replace(/^bearer\s+/i, '').trim(), this.__mad3Url)
     }
     this.addEventListener('load', () => {
       try {

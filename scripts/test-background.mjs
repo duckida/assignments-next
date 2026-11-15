@@ -1,30 +1,28 @@
 #!/usr/bin/env node
 /**
- * Smoke test for the service worker's background sign-in logic (no browser needed).
- * Bundles src/background/index.js to a temp IIFE, runs it in a vm with a mocked
- * chrome API, and drives the SYNC / TOKEN / OPEN_TEAMS / CLEAR messages.
+ * Service-worker regressions: background sign-in, scoped roster lookup, resources
+ * and authenticated inline images. Uses a mocked Chrome API and network.
  *
  *   npm test
  */
 import { build } from 'esbuild'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { parseHTML } from 'linkedom'
 import { join, resolve } from 'node:path'
 import vm from 'node:vm'
+import { describeResource, driveItemUrl, isGraphUrl } from '../src/shared/resources.js'
+import { mapAssignment, mapSubmission, sanitizeHtml, sortCompletedAssignments } from '../src/shared/normalize.js'
+import { mergeAssignmentClasses } from '../src/shared/classes.js'
 
 const root = resolve(import.meta.dirname, '..')
-const tmp = mkdtempSync(join(tmpdir(), 'mad3-test-'))
-const outfile = join(tmp, 'background.js')
-await build({
+const bundled = await build({
   entryPoints: [join(root, 'src/background/index.js')],
-  outfile,
+  write: false,
   bundle: true,
   format: 'iife',
   target: ['chrome111'],
   logLevel: 'silent',
 })
-const code = readFileSync(outfile, 'utf8')
-process.on('exit', () => rmSync(tmp, { recursive: true, force: true }))
+const code = bundled.outputFiles[0].text
 
 const mkStore = () => {
   const m = new Map()
@@ -126,7 +124,7 @@ let currentFetch = async (url, init) => {
   return { ok: true, status: 200, statusText: 'OK', text: async () => JSON.stringify(body) }
 }
 
-vm.runInNewContext(code, { chrome, fetch: (u, i) => currentFetch(u, i), AbortSignal, setTimeout, clearTimeout, console, Date, URL, TextDecoder })
+vm.runInNewContext(code, { chrome, fetch: (u, i) => currentFetch(u, i), AbortSignal, setTimeout, clearTimeout, console, Date, URL, TextDecoder, atob, btoa })
 
 const send = (type, payload) =>
   new Promise((resolve) => {
@@ -140,6 +138,9 @@ const MSG = {
   TOKEN: 'mad3/token',
   OPEN_TEAMS: 'mad3/open-teams',
   CLEAR: 'mad3/clear',
+  RESOURCE: 'mad3/resource',
+  DETAIL: 'mad3/detail',
+  SUBMISSION: 'mad3/submission',
 }
 
 const out = []
@@ -214,9 +215,171 @@ check('open-teams reuses a Teams tab', open.ok === true && calls.create.length =
   currentFetch = base
 }
 
-// 7. clear wipes the learned trigger
+// Tokens with identical audience, expiry, and length can carry different scopes.
+// Keep them all, including when captures arrive concurrently.
+const graphAud = '00000003-0000-0000-c000-000000000000'
+const expires = Date.now() + 3600e3
+const assignmentToken = { token: 'a'.repeat(40), aud: graphAud, expMs: expires, scp: 'EduAssignments.ReadWrite', tid: 'school', oid: 'student', upn: 'student@school.edu' }
+const rosterToken = { ...assignmentToken, token: 'r'.repeat(40), scp: 'Team.ReadBasic.All Group.Read.All' }
+const filesToken = { ...assignmentToken, token: 'f'.repeat(40), scp: 'Files.Read.All' }
+await send(MSG.CLEAR, {})
+await Promise.all([assignmentToken, rosterToken, filesToken].map((p) => send(MSG.TOKEN, p)))
+const keptTokens = session._m.get('mad3.session.tokens.v2') || []
+check('concurrent captures retain distinct same-audience tokens', keptTokens.length === 3, keptTokens.map((p) => p.scp))
+
+const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+const denied = () => json({ error: { code: 'Authorization_RequestDenied', message: 'Insufficient privileges' } }, 403)
+const apiCalls = []
+const classId = 'a11a1111-1111-1111-1111-111111111111'
+currentFetch = async (value, init = {}) => {
+  const u = new URL(value)
+  const auth = init.headers?.Authorization
+  apiCalls.push({ url: u.href, auth })
+  if (u.pathname.endsWith('/education/me/assignments')) {
+    return auth === `Bearer ${assignmentToken.token}` ? json({ value: [{ ...ASSIGNMENT, classId, className: 'Class' }] }) : denied()
+  }
+  if (u.pathname.endsWith('/me/joinedTeams')) {
+    if (u.search) return json({ error: { message: 'Query options are not supported.' } }, 400)
+    return auth === `Bearer ${rosterToken.token}` ? json({ value: [{ id: classId.toUpperCase(), displayName: 'Biology 12' }] }) : denied()
+  }
+  if (u.pathname.endsWith('/education/me/classes')) return denied()
+  if (u.pathname.endsWith('/$batch')) {
+    const requests = JSON.parse(init.body).requests
+    return json({ responses: requests.map((r) => ({ id: r.id, status: 200, body: { value: [{ id: 's1', status: 'working' }] } })) })
+  }
+  return denied()
+}
+res = await send(MSG.SYNC, { auto: false })
+check('class names use a separate roster token and case-insensitive IDs', res.ok && res.data.assignments[0].className === 'Biology 12', res)
+check('joinedTeams is requested without unsupported query options', apiCalls.some((r) => r.url.endsWith('/me/joinedTeams')) && !apiCalls.some((r) => r.url.includes('/me/joinedTeams?')), apiCalls)
+check('placeholder class names do not mask assignment names', mergeAssignmentClasses([{ id: classId.toUpperCase(), name: 'Class' }], [{ classId, className: 'Chemistry' }])[0].name === 'Chemistry')
+
+// If list membership fails, resolve the class via its group ID.
+local._m.delete('mad3.cache.v2')
+const rosterFetch = currentFetch
+currentFetch = async (value, init = {}) => {
+  if (String(value).endsWith('/me/joinedTeams')) return denied()
+  if (String(value).endsWith('/$batch') && init.headers?.Authorization === `Bearer ${rosterToken.token}`) {
+    return json({ responses: JSON.parse(init.body).requests.map((r) => ({
+      id: r.id, status: r.url.startsWith('/groups/') ? 200 : 403,
+      body: r.url.startsWith('/groups/') ? { displayName: 'Chemistry Lab' } : { error: {} },
+    })) })
+  }
+  return rosterFetch(value, init)
+}
+res = await send(MSG.SYNC, { auto: false })
+check('class-name backfill uses group metadata when roster is unavailable', res.ok && res.data.assignments[0].className === 'Chemistry Lab', res)
+
+// File links may be supplied in link/webUrl/fileUrl and use any drive addressing.
+const fileApi = 'https://graph.microsoft.com/v1.0/sites/school/drive/items/file/content?download=1'
+const webUrl = 'https://school.sharepoint.com/sites/Biology/Shared%20Documents/diagram.png'
+const downloadUrl = 'https://school.sharepoint.com/download/diagram?ticket=short-lived'
+const imageBytes = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10)
+const resourceCalls = []
+currentFetch = async (value, init = {}) => {
+  const u = new URL(value)
+  const auth = init.headers?.Authorization
+  resourceCalls.push({ url: u.href, auth })
+  if (u.origin === 'https://graph.microsoft.com') {
+    if (auth !== `Bearer ${filesToken.token}`) return denied()
+    if (u.pathname !== '/v1.0/sites/school/drive/items/file') return json({ error: { message: 'Expected item metadata' } }, 400)
+    return json({ id: 'file', name: 'diagram.png', webUrl, file: { mimeType: 'image/png' }, '@microsoft.graph.downloadUrl': downloadUrl })
+  }
+  if (u.href === downloadUrl) return new Response(imageBytes, { headers: { 'content-type': 'image/png' } })
+  return json({ error: {} }, 404)
+}
+const beforeOpen = calls.create.length
+res = await send(MSG.RESOURCE, { op: 'open', url: fileApi })
+check('file links resolve with a Files-scoped bearer token', res.ok && resourceCalls.some((r) => r.auth === `Bearer ${filesToken.token}`), { res, resourceCalls })
+check('resource click opens SharePoint instead of a bare Graph URL', calls.create.length === beforeOpen + 1 && calls.create.at(-1).url === webUrl, calls.create.at(-1))
+res = await send(MSG.RESOURCE, { op: 'preview', url: fileApi })
+check('image attachments are returned as inline image bytes', res.ok && res.isImage && res.dataUrl === `data:image/png;base64,${Buffer.from(imageBytes).toString('base64')}`, res)
+check('download URLs are fetched without forwarding Graph bearer tokens', resourceCalls.filter((r) => r.url === downloadUrl).every((r) => !r.auth), resourceCalls)
+check('image data and download tickets are not persisted', !JSON.stringify([...local._m.values()]).includes('short-lived') && !JSON.stringify([...local._m.values()]).includes('data:image/png'))
+
+const normalized = describeResource({ resource: { displayName: 'diagram.png', link: fileApi, '@odata.type': '#microsoft.graph.educationLinkResource' } })
+check('Graph URLs are recognized even when supplied as link resources', normalized.name === 'diagram.png' && normalized.isImage && isGraphUrl(normalized.url), normalized)
+const protectedImage = describeResource({
+  resource: { displayName: 'diagram.png', webUrl, fileUrl: fileApi, '@odata.type': '#microsoft.graph.educationFileResource' },
+})
+check('inline images prefer the authenticated Graph file URL over a SharePoint link', protectedImage.url === webUrl && protectedImage.imageUrl === fileApi && protectedImage.apiUrl === fileApi, protectedImage)
+const unnamedFile = describeResource({ resource: { webUrl, fileUrl: fileApi, '@odata.type': '#microsoft.graph.educationFileResource' } })
+check('unnamed file resources keep their Graph URL for a metadata probe', unnamedFile.url === webUrl && unnamedFile.apiUrl === fileApi && !unnamedFile.hasName, unnamedFile)
+const driveForms = [
+  '/v1.0/drives/d/items/i/content?download=1',
+  '/v1.0/groups/g/drive/items/i',
+  '/beta/me/drive/items/i/content',
+  '/v1.0/shares/u!abc/driveItem/content',
+  '/v1.0/me/drive/root:/folder/image.png:/content',
+]
+check('all supported Graph drive URL forms resolve to item metadata', driveForms.every((u) => {
+  const url = driveItemUrl(`https://graph.microsoft.com${u}`)
+  return !!url && !url.endsWith('/content') && !url.includes('?')
+}), driveForms)
+
+const beforeInvalid = calls.create.length
+res = await send(MSG.RESOURCE, { op: 'open', url: 'https://graph.microsoft.com/v1.0/not-a-file' })
+check('unsupported Graph URLs report an error instead of opening without auth', !res.ok && calls.create.length === beforeInvalid, res)
+
+// Protected instruction image uses the original image service's token, not Graph.
+const imageOrigin = 'https://image-service.teams.microsoft.com'
+await send(MSG.TOKEN, { token: 's'.repeat(40), aud: 'teams-image-audience', scp: '', expMs: expires, tid: 'school', oid: 'student', requestOrigin: imageOrigin })
+let imageAuth
+currentFetch = async (value, init) => {
+  imageAuth = init.headers?.Authorization
+  return new Response(imageBytes, { headers: { 'content-type': 'image/png' } })
+}
+res = await send(MSG.RESOURCE, { op: 'image', url: `${imageOrigin}/pictures/diagram` })
+check('instruction images reuse the token observed on that image origin', res.ok && res.dataUrl?.startsWith('data:image/png') && imageAuth === `Bearer ${'s'.repeat(40)}`, res)
+res = await send(MSG.RESOURCE, { op: 'image', url: 'https://unrelated.example/image.png' })
+check('unrelated image hosts receive no captured bearer token', res.ok && !imageAuth, imageAuth)
+currentFetch = async () => new Response('<html>Sign in</html>', { headers: { 'content-type': 'text/html' } })
+res = await send(MSG.RESOURCE, { op: 'image', url: 'https://school.sharepoint.com/image.png' })
+check('login HTML is not rendered as an inline image', !res.ok && !res.dataUrl, res)
+
+// Rendering an internal EDU detail must retain file/media types and fileUrl.
+await send(MSG.CLEAR, {})
+await send(MSG.TOKEN, { token: 'e'.repeat(40), aud: 'https://edu.microsoft.com', expMs: expires })
+currentFetch = async () => json({ id: 'a1', instructions: { content: '<p>Diagram</p>' }, resources: [{ id: 'r1', fileUrl: fileApi, displayName: 'diagram.png', '@odata.type': '#microsoft.graph.educationMediaResource' }] })
+res = await send(MSG.DETAIL, { id: 'a1', classId: 'c1' })
+check('internal EDU detail preserves instructions and authenticated file references', res.ok && res.assignment.instructions.content === '<p>Diagram</p>' && res.assignment.resources[0].resource.fileUrl === fileApi, res)
+
+// Done follows completion activity, not oldest due date or assignment edits.
+const done = [
+  { id: 'old', due: '2026-11-14', submitted: '2026-11-01', modified: '2026-11-15' },
+  { id: 'recent', due: '2026-10-01', submitted: '2026-11-13' },
+  { id: 'graded', due: '2026-09-01', submitted: '2026-10-01', returned: '2026-11-14' },
+  { id: 'fallback', due: '2026-11-02', submitted: 'not-a-date' },
+].map((a) => ({
+  ...mapAssignment({ id: a.id, classId: 'c1', displayName: a.id, dueDateTime: a.due, lastModifiedDateTime: a.modified }),
+  submission: mapSubmission({ submittedDateTime: a.submitted, returnedDateTime: a.returned, status: a.returned ? 'returned' : 'submitted' }),
+}))
+check('Done is newest completed/returned first with date fallbacks', sortCompletedAssignments(done).map((a) => a.id).join(',') === 'graded,recent,fallback,old')
+
+// Instruction HTML is rendered through a DOMParser sanitizer in the dashboard.
+// linkedom supplies that DOM in this Node harness (the browser supplies the real one).
+globalThis.DOMParser = class {
+  parseFromString(html) {
+    return parseHTML(`<!doctype html><html><body>${String(html || '')}</body></html>`).document
+  }
+}
+const sanitized = sanitizeHtml(
+  '<p>Read <a href="https://example.com/spec" onclick="steal()">the spec</a> ' +
+  '<a href="javascript:alert(1)">or not</a>.</p>' +
+  '<script>alert(1)</script>' +
+  '<figure><img src="https://school.sharepoint.com/diagram.png" onerror="steal()"><figcaption>Diagram</figcaption></figure>' +
+  '<img src="data:image/svg+xml,%3Csvg%3E%3C/svg%3E" alt="inline">' +
+  '<img src="file:///etc/passwd">'
+)
+check('sanitizer keeps images and figures but drops scripts and event handlers', /<figure>/.test(sanitized) && /<figcaption>Diagram<\/figcaption>/.test(sanitized) && !/<script|onerror|onclick|javascript:/i.test(sanitized), sanitized)
+check('sanitizer keeps remote and inline images and drops local-file sources', sanitized.includes('https://school.sharepoint.com/diagram.png') && sanitized.includes('data:image/svg+xml') && !sanitized.includes('file:///etc/passwd'), sanitized)
+check('sanitizer makes outbound links safe and opaque', /href="https:\/\/example\.com\/spec"/.test(sanitized) && /rel="noopener noreferrer"/.test(sanitized) && !/href="javascript:/i.test(sanitized), sanitized)
+
+// Clear wipes the learned trigger and detail cache, including the older format.
+local._m.set('mad3.details.v2', { stale: true })
 await send(MSG.CLEAR, {})
 check('clear removes trigger', !local._m.has('mad3.eduTrigger.v1'), [...local._m.keys()])
+check('clear removes old and current detail caches', !local._m.has('mad3.details.v2') && !local._m.has('mad3.details.v3'), [...local._m.keys()])
 
 console.log(out.join('\n'))
 process.exit(out.some((l) => l.startsWith('FAIL')) ? 1 : 0)

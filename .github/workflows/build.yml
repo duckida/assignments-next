@@ -20,6 +20,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Service-worker and normalization tests
+        run: npm test
+
       - name: Build extension (dist/)
         run: npm run build
 

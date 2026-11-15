@@ -75,22 +75,23 @@ Then load `dist/` as an unpacked extension (`chrome://extensions` → Developer 
 
 1. Open the extension (toolbar icon or the floating **A+** button in Teams). It pulls a session by itself: if there is none, a Teams tab opens in the background on the Assignments deep link. The only manual step ever is signing in to Microsoft when that session has expired.
 2. Click the extension toolbar icon (or the floating **A+** button in Teams) to open the dashboard.
-3. Views: **Overdue / Upcoming / Done**, per-class filter chips, sections Due today → Next few days → Later.
-4. Click a card for the detail sheet: instructions (images included), resources, your grade + teacher feedback, *Open in Teams*.
+3. Views: **Overdue / Upcoming / Done**, per-class filter chips, sections Due today → Next few days → Later. Done is ordered by the latest submission, return, or excuse.
+4. Click a card for the detail sheet: instructions (with images rendered inline), resources, your grade + teacher feedback, *Open in Teams*. Graph file links are resolved with the captured session token, so they open as normal SharePoint links instead of failing with an empty Authorization header.
 5. **Attach links or files** to your submission right in the detail sheet (add/remove before turning in), then **Turn in** with a two-step confirm. **Undo turn-in** is available while a submission awaits grading.
 6. No token / no scopes / expired session each get a dedicated recovery screen.
 7. `preview.html` in `dist/` shows the full UI on demo data without any account.
 
 ## Performance notes
 
-- Roster + assignment list are fetched concurrently; per-assignment submission lookups go through `$batch` with parallel chunks.
-- Missing class display names are resolved in a single batched backfill (only when needed).
+- Assignments are fetched first; submission lookups and class-name resolution then run concurrently.
+- Missing class display names are backfilled from every captured Graph token (education roster, joined teams, group, or team metadata) using case-insensitive IDs. A literal fallback name such as `Class` never masks a real one.
 - The dashboard paints from the local cache instantly, and assignment details are cached in the service worker for 15 minutes.
-- Detail images lazy-load as you scroll.
+- Detail images lazy-load as you scroll. Graph-hosted read-only images are fetched in the service worker and passed to the page as data URLs.
 
 ## Security notes
 
-- The token never leaves the browser: stored in `chrome.storage.session` (memory), used only for `graph.microsoft.com`.
+- The Graph token never leaves the browser: stored in `chrome.storage.session` (memory) and used only for Microsoft Graph. Other service tokens are replayed only to the exact origin that Teams itself sent them to (used for inline images), never to Graph or a third party.
+- Graph file links are resolved with that token inside the service worker. The dashboard never puts a bearer token in a URL, DOM attribute, log, or local storage. Short-lived Graph download URLs are used without forwarding the bearer token, and image bytes reach the page as data URLs.
 - All calls are exactly what the signed-in student can already do in Teams. Nothing is sent to third parties.
 - Turn-in only happens when you press the button — read paths are untouched until then.
 - Teacher-authored instructions are whitelist-sanitized before rendering (images allowed from `http(s)` and inline `data:image` only).

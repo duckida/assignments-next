@@ -1,6 +1,7 @@
 import Icon from './Icon.jsx'
 import { ClassAvatar } from './Chips.jsx'
-import { dueLabel, shortDueLabel, classHue } from '../../shared/normalize.js'
+import { shortDueLabel } from '../../shared/normalize.js'
+import { bestClassName } from '../../shared/classes.js'
 
 /** One assignment row — elevated M3 card with class avatar, due chip and status. */
 export default function AssignmentCard({ a, cls, onOpen }) {
@@ -34,7 +35,7 @@ export default function AssignmentCard({ a, cls, onOpen }) {
       <div className="body">
         <div className="title">{a.title}</div>
         <div className="sub">
-          {cls?.name || 'Class'} {cls?.description ? <span className="sep"> {cls.description}</span> : null}
+          {bestClassName(cls?.name, a.className) || 'Unknown class'} {cls?.description ? <span className="sep"> {cls.description}</span> : null}
         </div>
         {state.progress === 'graded' && a.submission?.score != null ? (
           <div>

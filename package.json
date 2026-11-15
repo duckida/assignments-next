@@ -1,7 +1,7 @@
 {
   "name": "assignments-next",
   "private": true,
-  "version": "0.1.7",
+  "version": "0.1.8",
   "type": "module",
   "description": "Material 3 alternative frontend for Teams Assignments (student view) as a browser extension",
   "scripts": {
@@ -17,6 +17,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "esbuild": "^0.24.2",
+    "linkedom": "^0.18.15",
     "vite": "^6.0.7"
   }
 }
